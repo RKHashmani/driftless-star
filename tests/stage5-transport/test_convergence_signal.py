@@ -130,19 +130,30 @@ def _with_clock(path: Path, final_time: float) -> Path:
     return path
 
 
+@pytest.mark.parametrize(
+    ("final_time", "reached"), [(1.0, False), (2.0, True), (3.0, True)],
+    ids=["before", "at", "past"],
+)
+def test_transport_horizon_reached_compares_the_clock_against_t_final(
+    tmp_path: Path, final_time: float, reached: bool
+) -> None:
+    f = _with_clock(_write(tmp_path / "clock.h5", _static(2.0), _static(2.0, n_rho=6)), final_time)
+    assert post.transport_horizon_reached(f, _clock_template(tmp_path)) is reached
+
+
 # A solution without an exported clock cannot be compared with the horizon. The loop must not guess.
-def test_t_final_converged_needs_the_solutions_clock(tmp_path: Path) -> None:
+def test_transport_horizon_needs_the_solutions_clock(tmp_path: Path) -> None:
     f = _write(tmp_path / "no_clock.h5", _static(2.0), _static(2.0, n_rho=6))
     with pytest.raises(KeyError, match="final_time"):
-        post.t_final_converged(f, rel_tol=1e-2, common_config=_clock_template(tmp_path))
+        post.transport_horizon_reached(f, _clock_template(tmp_path))
 
 
-def test_t_final_converged_needs_a_configured_end_time(tmp_path: Path) -> None:
+def test_transport_horizon_needs_a_configured_end_time(tmp_path: Path) -> None:
     f = _with_clock(_write(tmp_path / "clock.h5", _static(2.0), _static(2.0, n_rho=6)), 1.0)
     template = tmp_path / "no_horizon.toml"
     template.write_text("[transport_solver]\nt0 = 0.0\ndt = 0.5\n")
     with pytest.raises(KeyError, match=r"\[transport_solver\]\.t_final"):
-        post.t_final_converged(f, rel_tol=1e-2, common_config=template)
+        post.transport_horizon_reached(f, template)
 
 
 # The ``t_final`` criterion reads only the clock. The pressure doubles between the two slices, so

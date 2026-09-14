@@ -115,11 +115,11 @@ def pointwise_pressure_converged(transport: Path, *, rel_tol: float, common_conf
     return _pressure_converged(transport, rel_tol=rel_tol, method="pointwise")
 
 
-def t_final_converged(transport: Path, *, rel_tol: float, common_config: Path) -> bool:
-    """Return whether the transport clock has reached [transport_solver].t_final.
+def transport_horizon_reached(transport: Path, common_config: Path) -> bool:
+    """Return whether the transport clock has reached the configured end time.
 
-    This is a debugging criterion. It reports convergence when the transport clock reaches
-    ``t_final``. It does not read the pressure change.
+    Each pass resumes when the previous pass stopped. Therefore, [transport_solver].t_final is an
+    absolute horizon. No transport time remains after ``final_time`` reaches this value.
 
     NEOPAX accepts ``t0 >= t_final`` and can return an empty solution. This check stops the loop
     before another pass starts.
@@ -128,8 +128,6 @@ def t_final_converged(transport: Path, *, rel_tol: float, common_config: Path) -
     ----------
     transport : Path
         This pass's ``transport_solution.h5``, read for its ``final_time``.
-    rel_tol : float
-        Unused. Every registered criterion takes the same arguments.
     common_config : Path
         The ``common_input.toml`` used for this pass. It supplies [transport_solver].t_final.
 
@@ -159,6 +157,34 @@ def t_final_converged(transport: Path, *, rel_tol: float, common_config: Path) -
     t_final = float(solver_cfg["t_final"])
     logger.info("transport clock at %r against [transport_solver].t_final %r", final_time, t_final)
     return final_time >= t_final
+
+
+def t_final_converged(transport: Path, *, rel_tol: float, common_config: Path) -> bool:
+    """Return whether the transport clock has reached [transport_solver].t_final.
+
+    This is a debugging criterion. It reports convergence when the transport clock reaches
+    ``t_final``. It does not read the pressure change.
+
+    Parameters
+    ----------
+    transport : Path
+        This pass's ``transport_solution.h5``, read for its ``final_time``.
+    rel_tol : float
+        Unused. Every registered criterion takes the same arguments.
+    common_config : Path
+        The ``common_input.toml`` used for this pass. It supplies [transport_solver].t_final.
+
+    Returns
+    -------
+    bool
+        ``True`` once ``final_time`` has reached ``t_final``.
+
+    Raises
+    ------
+    KeyError
+        If the solution lacks ``final_time`` or the config lacks [transport_solver].t_final.
+    """
+    return transport_horizon_reached(transport, common_config)
 
 
 _PRESSURE_CONVERGENCE_METHODS: dict[str, Callable[..., bool]] = {
@@ -222,7 +248,7 @@ def build_signal(
 
     if pressure_converged(transport, rel_tol=rel_tol, common_config=common_config):
         return {"status": "converged"}
-    if t_final_converged(transport, rel_tol=rel_tol, common_config=common_config):
+    if transport_horizon_reached(transport, common_config):
         logger.warning(
             "the transport clock has reached [transport_solver].t_final, so the next pass would have no "
             "time to advance into and would re-integrate this window under the times it already used. "
