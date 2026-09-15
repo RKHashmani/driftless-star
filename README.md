@@ -34,7 +34,7 @@ Stages 3 and 4 run in parallel. Each stage should eventually be independently sw
 
 | Stage | Physics | JAX Primary | Alternatives |
 |-------|---------|-------------|--------------|
-| 1. Equilibrium | Ideal-MHD force balance | [vmec_jax](https://github.com/uwplasma/vmec_jax), [DESC](https://github.com/PlasmaControl/DESC) | [VMEC++](https://github.com/proximafusion/vmecpp) |
+| 1. Equilibrium | Ideal-MHD force balance | [vmex](https://github.com/uwplasma/vmex), [DESC](https://github.com/PlasmaControl/DESC) | [VMEC++](https://github.com/proximafusion/vmecpp) |
 | 2. Boozer Transform | Coordinate transform | [booz_xform_jax](https://github.com/uwplasma/booz_xform_jax) | [BOOZ_XFORM](https://github.com/hiddenSymmetries/booz_xform) |
 | 3. Neoclassical | Effective ripple, drift-kinetic | [NEO_JAX](https://github.com/uwplasma/NEO_JAX), [sfincs_jax](https://github.com/uwplasma/sfincs_jax) | [NEO](https://github.com/PrincetonUniversity/STELLOPT), [SFINCS](https://github.com/landreman/sfincs) |
 | 4. Turbulence | Gyrokinetic equation | [GKX](https://github.com/uwplasma/GKX) | [GX](https://bitbucket.org/gyrokinetics/gx), [GENE](https://genecode.org) |
@@ -60,7 +60,7 @@ Stages 3 and 4 run in parallel. Each stage should eventually be independently sw
 Install the primary code, document the API and convergence behavior, write example scripts, set up W&B tracking. Full checklist in the [Guide](docs/guide.md#phase-1-document--run).
 
 - [ ] Stage 1 -- Equilibrium
-  - [ ] `vmec_jax`
+  - [ ] `vmex`
   - [ ] `DESC`
   - [ ] `VMEC++`
 - [ ] Stage 2 -- Boozer Transform
@@ -84,7 +84,7 @@ Install the primary code, document the API and convergence behavior, write examp
 Containerize stages and write tests. Full checklist in the [Guide](docs/guide.md#phase-2-containerize--test).
 
 - [ ] Stage 1 -- Equilibrium
-  - [x] `vmec_jax`
+  - [x] `vmex`
   - [x] `DESC`
   - [ ] `VMEC++`
 - [x] Stage 2 -- Boozer Transform
@@ -191,7 +191,7 @@ git clone https://github.com/driftless-star/driftless-star.git
 cd driftless-star
 git submodule update --init --recursive
 snakemake --sdm docker --configfile inputs/quick_run/config.yaml
-docker pull ghcr.io/driftless-star/driftless-star:stage-1-vmec-cpu
+docker pull ghcr.io/driftless-star/driftless-star:stage-1-vmex-cpu
 -->
 
 ## License

@@ -13,8 +13,8 @@
 mpol=10
 ntor=10
 ! Reduced-accuracy single-stage continuation for the CI smoke test.
-! Converges in ~70 iters at FTOL=1e-4 on both CPU and GPU vmec_jax;
-! the canonical 7-stage continuation lives in input.HSX_QHS_vacuum_ns201.
+! Converges in 69 iters at FTOL=1e-4 on CPU with VMEX.
+! The canonical 7-stage continuation lives in input.HSX_QHS_vacuum_ns201.
 ns_array   = 11
 niter_array= 1000
 ftol_array = 1e-4

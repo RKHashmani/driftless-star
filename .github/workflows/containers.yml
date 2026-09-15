@@ -48,8 +48,8 @@ jobs:
         run: |
           matrix=$(cat <<'EOF'
           [
-            {"environment": "stage-1-vmec", "image-tag": "stage-1-vmec-cpu", "platforms": "linux/amd64,linux/arm64"},
-            {"environment": "stage-1-vmec-gpu", "cuda-version": "12", "image-tag": "stage-1-vmec-gpu", "platforms": "linux/amd64"},
+            {"environment": "stage-1-vmex", "image-tag": "stage-1-vmex-cpu", "platforms": "linux/amd64,linux/arm64"},
+            {"environment": "stage-1-vmex-gpu", "cuda-version": "12", "image-tag": "stage-1-vmex-gpu", "platforms": "linux/amd64"},
             {"environment": "stage-1-desc", "image-tag": "stage-1-desc-cpu", "platforms": "linux/amd64,linux/arm64"},
             {"environment": "stage-1-desc-gpu", "cuda-version": "12", "image-tag": "stage-1-desc-gpu", "platforms": "linux/amd64"},
             {"environment": "stage-2-booz", "image-tag": "stage-2-booz-cpu", "platforms": "linux/amd64,linux/arm64"},

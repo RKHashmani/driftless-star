@@ -50,7 +50,7 @@ if CONTAINER_RUNTIME not in ("docker", "apptainer"):
         f"got {CONTAINER_RUNTIME!r}."
     )
 
-STAGE1_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-1-vmec-{DEVICE}"
+STAGE1_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-1-vmex-{DEVICE}"
 STAGE2_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-2-booz-jax-{DEVICE}"
 STAGE3_JAX_IMG = f"ghcr.io/driftless-star/driftless-star:stage-3-sfincs-{DEVICE}"
 STAGE4_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-4-gkx-{DEVICE}"
@@ -181,13 +181,13 @@ rule all:
 
 # A frozen stage's rules are omitted from the workflow, so its reuse-tree artifacts cannot be rebuilt or overwritten.
 if RERUN["stage1"]:
-    rule stage1_vmec:
+    rule stage1_vmex:
         input:  S1_INPUT
         output: S1_OUTPUT
         log:    f"{P['stage1_dir']}/{RUN_NAME}.log"
         shell:
             f"{container_image_ref(STAGE1_IMG)} "
-            f"vmec_jax {{input}} --output {{output}}"
+            f"python stages/stage1-equilibrium/run_vmex.py --input {{input}} --output {{output}} --device {DEVICE}"
             " 2>&1 | tee {log}"
 
 if RERUN["stage2"]:

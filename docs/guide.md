@@ -8,7 +8,7 @@ driftless-star implements the stellarator design workflow described in the compa
 
 **Goal:** A working forward pass -- a single traversal of the pipeline from boundary Fourier coefficients and profile guesses through to transport-consistent profiles and fusion-power metrics (P_fus, Q). An initial **closed loop** is now implemented on top of this: Stage 5's transport solution is fit back into the Stage 1 pressure profile and the forward pass re-run, iterating toward a transport-consistent equilibrium via the external `ouroboros` driver (see [Closing the Loop](mvp-pipeline.md#closing-the-loop)). The re-run rebuilds the equilibrium, so the updated geometry flows on to Stages 3/4, and from iteration 2 the transport-evolved n(r)/T(r)/E_r(r) are prescribed to Stages 3/4/5 as well, so every profile consumer reads the previous pass's transport solution. Individual stages can be frozen after iteration 1 with the per-stage [`loop.rerun`](mvp-pipeline.md#per-stage-rerun-flags) flags. One extension remains future work: feeding back the **current** profile (only pressure is fit today).
 
-**JAX-first strategy:** The pipeline prioritizes JAX-native implementations for differentiability and tight integration: `vmec_jax` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `NEOPAX`. Other codes (`VMEC++`, `BOOZ_XFORM`, `NEO_JAX`, `NEO`, `SFINCS`, `GX`, `GENE`, `Trinity3D`) are swappable alternatives.
+**JAX-first strategy:** The pipeline prioritizes JAX-native implementations for differentiability and tight integration: `vmex` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `NEOPAX`. Other codes (`VMEC++`, `BOOZ_XFORM`, `NEO_JAX`, `NEO`, `SFINCS`, `GX`, `GENE`, `Trinity3D`) are swappable alternatives.
 
 ## Pipeline Architecture
 
@@ -19,7 +19,7 @@ driftless-star implements the stellarator design workflow described in the compa
 
 | Stage | Physics | JAX Primary | Alternatives | Input Artifacts | Output Artifacts |
 |-------|---------|-------------|--------------|-----------------|------------------|
-| 1. Equilibrium | Ideal-MHD force balance | `vmec_jax`, `DESC` | `VMEC++` | INDATA/JSON boundary coefficients, pressure/iota/current coefficients, PHIEDGE | `wout_*.nc` (NetCDF) |
+| 1. Equilibrium | Ideal-MHD force balance | `vmex`, `DESC` | `VMEC++` | INDATA/JSON boundary coefficients, pressure/iota/current coefficients, PHIEDGE | `wout_*.nc` (NetCDF) |
 | 2. Boozer Transform | Coordinate transform to Boozer angles | `booz_xform_jax` | `BOOZ_XFORM` | `wout_*.nc` | `boozmn_*.nc` (NetCDF) |
 | 3. Neoclassical | Effective ripple, drift-kinetic transport | `NEO_JAX`, `sfincs_jax` | `NEO`, `SFINCS` | `NEO_JAX`: `boozmn_*.nc`; `SFINCS`: `wout_*.nc` + input file | `neo_out.*`, `sfincs_jax_flux_profiles.h5` |
 | 4. Turbulence | Delta-f gyrokinetic equation | `GKX` | `GX`, `GENE` | Geometry + species profiles/gradients | gamma, omega, heat/particle flux (NetCDF/CSV) |
@@ -135,7 +135,7 @@ Work through these steps in order. Each step should result in updates to the sta
 
 Conventions:
 - **Project name:** `driftless-star-stage{N}-{name}` (e.g., `driftless-star-stage1-equilibrium`)
-- **Run naming:** `{code}_{config}_{timestamp}` (e.g., `vmec_jax_qa_2026-04-01T12:00`)
+- **Run naming:** `{code}_{config}_{timestamp}` (e.g., `vmex_qa_2026-04-01T12:00`)
 - **Metrics to log:** Stage-specific convergence metrics, runtime, key physics outputs (see the spec for guidance)
 - Create a dashboard with the most important panels for the stage
 - Fill in the "W&B Tracking" section of the relevant spec
@@ -162,7 +162,7 @@ driftless-star is a **recipe repo**: it contains everything needed to build and 
 
 **Two decoupled Pixi workspaces.** The repo splits dependency management along the orchestration / physics boundary:
 - **Root `pixi.toml`** -- orchestration. `pipeline` (`snakemake-minimal`, `graphviz`, `pytest`, plus the HTCondor executor plugin on linux-64) and `test`, which adds the numerical libraries the test suite needs. Both are installed directly on the execution node; Snakemake is never containerized for a local run, because nested containers are fragile and not widely supported on shared compute.
-- **`stages/pixi.toml`** -- per-stage physics environments (e.g., `stage-1-vmec`, `stage-1-vmec-gpu`) that fully specify each stack. These are only consumed by the container builder, so they are entirely isolated from the orchestration env.
+- **`stages/pixi.toml`** -- per-stage physics environments (e.g., `stage-1-vmex`, `stage-1-vmex-gpu`) that fully specify each stack. These are only consumed by the container builder, so they are entirely isolated from the orchestration env.
 
 Each workspace has its own lockfile (`pixi.lock` / `stages/pixi.lock`).
 
@@ -179,14 +179,14 @@ Because the executor formats each remote command line using the **submit host's*
 So `src/stage3_helper.py` *builds* the command, while `stages/stage3-neoclassical/sfincs_jax_radial_scan.py` is what that command *runs* inside the container.
 
 **Templated container images.** A single shared `stages/Dockerfile` and `stages/apptainer.def` use build arguments to select the target environment at build time:
-- `ENVIRONMENT` -- the Pixi environment name (e.g., `stage-1-vmec`, `stage-2-booz-jax-gpu`). Must be passed explicitly when building locally:
-   - `docker build --build-arg ENVIRONMENT=stage-1-vmec stages/`
-   - `cd stages && apptainer build --build-arg ENVIRONMENT="stage-1-vmec" stage-1-vmec.sif apptainer.def`
+- `ENVIRONMENT` -- the Pixi environment name (e.g., `stage-1-vmex`, `stage-2-booz-jax-gpu`). Must be passed explicitly when building locally:
+   - `docker build --build-arg ENVIRONMENT=stage-1-vmex stages/`
+   - `cd stages && apptainer build --build-arg ENVIRONMENT="stage-1-vmex" stage-1-vmex.sif apptainer.def`
 - `CUDA_VERSION` -- set for GPU builds (e.g., `12`), left empty for CPU builds
 
 The Dockerfile uses a multi-stage build on a `ghcr.io/prefix-dev/pixi:noble` base image. See `stages/Dockerfile` for implementation details.
 
-**Container images** are published to GHCR at `ghcr.io/driftless-star/driftless-star`. For MVP, the tags follow the pattern `stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmec-cpu`). Apptainer container images are prefixed with `apptainer-`. CI builds all stage variants from the container image definition files using a GitHub Actions matrix. See `.github/workflows/containers.yml` and `.github/actions/build-docker/action.yml` for the CI setup.
+**Container images** are published to GHCR at `ghcr.io/driftless-star/driftless-star`. For MVP, the tags follow the pattern `stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmex-cpu`). Apptainer container images are prefixed with `apptainer-`. CI builds all stage variants from the container image definition files using a GitHub Actions matrix. See `.github/workflows/containers.yml` and `.github/actions/build-docker/action.yml` for the CI setup.
 
 **Adding or updating a stage dependency:**
 1. Update `stages/pixi.toml` (add/change the dependency or git rev)
@@ -226,7 +226,7 @@ Updating the orchestration env follows the same pattern against the root `pixi.t
 ### Writing Tests
 
 **Unit tests.** Test mathematical invariants specific to the stage. Examples:
-- Stage 1: force-balance residual decreases monotonically during convergence
+- Stage 1: force-balance residuals meet the input tolerance when the solver reports convergence
 - Stage 2: (|B|_VMEC - |B|_Boozer) / |B|_VMEC < eps; Boozer transform preserves iota
 - Stage 3 (`NEO`): epsilon_eff is non-negative, bounded
 - Stage 3 (`SFINCS`): transport matrix has expected symmetry properties; full flux mode produces physically reasonable fluxes

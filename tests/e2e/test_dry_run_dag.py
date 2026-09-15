@@ -31,7 +31,7 @@ from src.utils import resolve_pipeline_paths
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FORWARD_RULES = (
-    "stage1_vmec",
+    "stage1_vmex",
     "stage2_boozer",
     "stage3_prepare",
     "stage3_collect",
@@ -82,9 +82,11 @@ def _write_convergence_override(tmp_path: Path, method: str) -> str:
 # is NOT scheduled, because the default target is a pure forward pass with no loop-closing step. This catches Snakefile
 # wiring/parse errors without Docker.
 def test_forward_pass_dag_dry_run(tmp_path: Path) -> None:
-    result = _dry_run(tmp_path, targets=[], config_overrides=[])
+    result = _dry_run(tmp_path, targets=[], config_overrides=[], printshellcmds=True)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
+    stage1_command = next(line for line in output.splitlines() if "run_vmex.py" in line)
+    assert all(flag in stage1_command for flag in ("run_vmex.py --input", "--output", "--device cpu")), output
     for rule in FORWARD_RULES:
         assert rule in output, f"rule {rule} not scheduled:\n{output}"
     assert "stage5_post_processing" not in output  # rule all is a pure forward pass
@@ -188,7 +190,7 @@ def test_apptainer_runtime_plans_native_gpu_image_and_absolute_binds(tmp_path: P
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert "apptainer run --unsquash --nv" in output, output
-    assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-1-vmec-gpu' in output, output
+    assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-1-vmex-gpu' in output, output
     assert f'--bind "{tmp_path}/out:{tmp_path}/out"' in output, output
     assert "docker run" not in output, output
 
@@ -282,7 +284,7 @@ def test_frozen_stages_absent_from_plan(tmp_path: Path) -> None:
         assert rule in output, f"rule {rule} not scheduled:\n{output}"
     # The Stage 2 output directory is also named stage2_boozer, and it legitimately appears in the reuse-tree paths
     # of the planned commands, so frozen rules are matched against the job header form instead of the bare name.
-    for rule in ("rule stage1_vmec:", "rule stage2_boozer:"):
+    for rule in ("rule stage1_vmex:", "rule stage2_boozer:"):
         assert rule not in output, f"frozen {rule.rstrip(':')} scheduled:\n{output}"
     # The composed commands must consume the frozen artifacts from the reuse tree, not the current output tree.
     assert reuse["s1_output"] in output, output

@@ -3,10 +3,10 @@ description: Build and optionally push a Docker image for a Pixi environment
 
 inputs:
   environment:
-    description: Pixi environment name (e.g., stage-1-vmec, stage-1-vmec-gpu)
+    description: Pixi environment name (e.g., stage-1-vmex, stage-1-vmex-gpu)
     required: true
   image-tag:
-    description: Docker image tag suffix (e.g., stage-1-vmec-cpu, stage-1-vmec-gpu)
+    description: Docker image tag suffix (e.g., stage-1-vmex-cpu, stage-1-vmex-gpu)
     required: true
   cuda-version:
     description: CUDA version for GPU builds (leave empty for CPU builds)
