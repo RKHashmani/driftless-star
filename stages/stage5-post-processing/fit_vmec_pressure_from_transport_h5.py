@@ -6,7 +6,7 @@ species pressure profiles on its **face** grid into a total pressure profile
 
     P(s) ~= sum_k AM[k] * s**k
 
-which matches the VMEC / vmec_jax ``PMASS_TYPE = "power_series"`` convention
+which matches the VMEC / vmex ``PMASS_TYPE = "power_series"`` convention
 when ``PRES_SCALE = 1``.
 
 Modes
@@ -292,7 +292,7 @@ def main() -> None:
         print(f"# resolved_time_index: {resolved_index}")
     else:
         print("# resolved_time_index: static_profile")
-    print("# VMEC / vmec_jax power-series pressure fit")
+    print("# VMEC / vmex power-series pressure fit")
     print("# P(s) ~= sum_k AM[k] * s**k")
     print("s = rho**2")
     print(_format_am_line(coeffs))

@@ -17,13 +17,13 @@ driftless-star is a **recipe repo**: it contains environment definitions, contai
 
 | Stage | Name | Primary Code | Alternatives | Spec |
 |-------|------|-------------|--------------|------|
-| 1 | Equilibrium | `vmec_jax`, `DESC` | `VMEC++` | `docs/stage1-equilibrium/spec.md` |
+| 1 | Equilibrium | `vmex`, `DESC` | `VMEC++` | `docs/stage1-equilibrium/spec.md` |
 | 2 | Boozer Transform | `booz_xform_jax` | `BOOZ_XFORM` | `docs/stage2-boozer/spec.md` |
 | 3 | Neoclassical | `NEO_JAX`, `sfincs_jax` | `NEO`, `SFINCS` | `docs/stage3-neoclassical/spec.md` |
 | 4 | Turbulence | `GKX` | `GX`, `GENE` | `docs/stage4-turbulence/spec.md` |
 | 5 | Transport | `NEOPAX` | `Trinity3D` | `docs/stage5-transport/spec.md` |
 
-Forward-pass chain: `vmec_jax` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `NEOPAX`
+Forward-pass chain: `vmex` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `NEOPAX`
 
 **Key notes:**
 - `NEO_JAX` is **not** in the forward-pass chain: it computes epsilon_eff as a screening/optimization diagnostic, runs in parallel with `sfincs_jax`, and is not consumed by Stage 5.
@@ -33,7 +33,7 @@ Forward-pass chain: `vmec_jax` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `
 
 - Stage directories: `stage{N}-{name}` (e.g., `stage1-equilibrium`)
 - Run inputs and outputs (top-level): each run is a folder under `inputs/` holding its `config.yaml` and stage inputs; the committed `inputs/quick_run/` baseline is tracked so a fresh clone is immediately runnable. Generated artifacts land under `outputs/<run>/stageN_<name>/` (e.g. `outputs/quick_run/stage1_equilibrium/`). `outputs/` and ad-hoc `inputs/<run>/` folders are gitignored (only `inputs/quick_run/` is tracked).
-- Container images: `ghcr.io/driftless-star/driftless-star:stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmec-cpu`) (on GHCR)
+- Container images: `ghcr.io/driftless-star/driftless-star:stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmex-cpu`) (on GHCR)
 - W&B projects: `driftless-star-stage{N}-{name}`
 - Test files: mirror the source structure in a top-level `tests/`
 
