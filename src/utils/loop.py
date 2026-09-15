@@ -8,7 +8,10 @@ reuse its iteration 1 output. The Snakefile and the closed-loop driver
 
 from __future__ import annotations
 
+import math
+
 LOOP_STAGES: tuple[str, ...] = ("stage1", "stage2", "stage3", "stage4", "stage5")
+PRESSURE_PROFILE_TYPES = ("akima_spline", "cubic_spline", "power_series")
 
 # This map lists the stage outputs that each stage reads directly. Snakefile rule inputs define it.
 # Stages 3 and 4 also read profiles from ``common_input``. These profiles change in each iteration.
@@ -128,3 +131,34 @@ def resolve_rerun_flags(config: dict) -> dict[str, bool]:
 
     _check_frozen_stage_inputs(flags)
     return flags
+
+
+def resolve_pressure_profile_type(config: dict) -> str:
+    """Return the validated pressure export mode."""
+    loop = _read_optional_mapping(config, "loop", "config['loop']", "loop settings")
+    value = loop.get("pressure_profile_type", "akima_spline")
+    if value not in PRESSURE_PROFILE_TYPES:
+        raise ValueError(f"loop.pressure_profile_type must be one of {PRESSURE_PROFILE_TYPES}, got {value!r}")
+    return value
+
+
+def validate_pressure_feedback_grid(config: dict, rho_edge: float) -> None:
+    """Reject a truncated transport domain when Stage 1 evolves."""
+    resolve_pressure_profile_type(config)
+    if resolve_rerun_flags(config)["stage1"] and (not math.isfinite(rho_edge) or abs(rho_edge - 1.0) > 1e-12):
+        raise ValueError("Evolving equilibrium requires [geometry].rho_edge = 1 for pressure feedback")
+
+
+def pressure_feedback_command(config: dict) -> str:
+    """Build the post-processing command for the configured Stage 1 behavior."""
+    profile_type = resolve_pressure_profile_type(config)
+    if not resolve_rerun_flags(config)["stage1"]:
+        return (
+            "cp {input.s1_input} {output.feedback} && "
+            "echo 'Stage 1 is frozen. Pressure export skipped. Copied unchanged equilibrium input.'"
+        )
+    return (
+        "python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py "
+        "write-input {input.transport} {input.s1_input} --output-input {output.feedback} "
+        f"--profile-type {profile_type}"
+    )

@@ -23,6 +23,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from src.ouroboros import _write_loop_overrides
@@ -363,3 +364,24 @@ def test_reuse_tree_with_all_frozen_fails_at_parse(tmp_path: Path) -> None:
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "freezes every stage" in output, output
+
+
+@pytest.mark.parametrize("frozen,profile_type", [
+    (False, "akima_spline"), (False, "cubic_spline"), (False, "power_series"),
+    (True, "akima_spline"),
+])
+def test_quick_run_pressure_feedback_command(tmp_path, frozen, profile_type):
+    override = tmp_path / "pressure.yaml"
+    override.write_text(yaml.safe_dump({"loop": {"rerun": {"stage1": not frozen},
+                                               "pressure_profile_type": profile_type}}))
+    result = _dry_run(tmp_path, targets=[f"{tmp_path}/out/stage5_post_processing/converge_status.json"],
+                      config_overrides=[], extra_configfiles=[str(override)], printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "stage1_vmex" in output  # Even a frozen stage must run on iteration 1.
+    if frozen:
+        assert "Pressure export skipped" in output
+        assert "fit_vmec_pressure_from_transport_h5.py" not in output
+    else:
+        assert f"--profile-type {profile_type}" in output
+        assert "Pressure export skipped" not in output

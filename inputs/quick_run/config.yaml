@@ -39,6 +39,8 @@ convergence:
 # Per-stage rerun flags for the ouroboros closed-loop driver, where a stage set to false
 # is frozen and loop iterations after the first reuse its iteration 1 output.
 loop:
+  # Pressure feedback for VMEX. Accepts akima_spline, cubic_spline, and power_series.
+  pressure_profile_type: akima_spline
   rerun:
     stage1: true
     stage2: true

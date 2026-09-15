@@ -132,3 +132,53 @@ def test_frozen_stage_with_rerunning_input_is_rejected(frozen: tuple[str, ...], 
 def test_malformed_config_is_rejected(config: dict, expected: str) -> None:
     with pytest.raises(ValueError, match=expected):
         resolve_rerun_flags(config)
+
+
+@pytest.mark.parametrize("profile_type", ["akima_spline", "cubic_spline", "power_series"])
+def test_pressure_feedback_selects_profile_type(profile_type):
+    from src.utils.loop import pressure_feedback_command
+    command = pressure_feedback_command({"loop": {"pressure_profile_type": profile_type}})
+    assert f"--profile-type {profile_type}" in command
+    assert "write-input {input.transport} {input.s1_input}" in command
+
+
+@pytest.mark.parametrize("value", [None, False, "akima", [], {}])
+def test_pressure_feedback_rejects_bad_profile_type(value):
+    from src.utils.loop import resolve_pressure_profile_type
+    with pytest.raises(ValueError, match="pressure_profile_type"):
+        resolve_pressure_profile_type({"loop": {"pressure_profile_type": value}})
+
+
+def test_pressure_feedback_defaults_to_akima():
+    from src.utils.loop import pressure_feedback_command
+    assert "--profile-type akima_spline" in pressure_feedback_command({})
+
+
+@pytest.mark.parametrize("reuse", [None, "outputs/iter_1"])
+def test_frozen_pressure_feedback_copies_input_even_on_first_iteration(tmp_path, reuse):
+    import subprocess
+    from types import SimpleNamespace
+    from src.utils.loop import pressure_feedback_command
+    config = {"loop": {"rerun": {"stage1": False}}}
+    if reuse:
+        config["loop"]["reuse_output_dir"] = reuse
+    command = pressure_feedback_command(config)
+    source, output = tmp_path / "input", tmp_path / "feedback"
+    source.write_bytes(b"&INDATA\nAM = 7\n/\n")
+    result = subprocess.run(command.format(input=SimpleNamespace(s1_input=source), output=SimpleNamespace(feedback=output)),
+                            shell=True, capture_output=True, text=True, check=True)
+    assert output.read_bytes() == source.read_bytes()
+    assert "Pressure export skipped" in result.stdout
+    assert "write-input" not in command
+
+
+@pytest.mark.parametrize("edge", [0.7, float("nan"), float("inf")])
+def test_evolving_equilibrium_requires_full_radius(edge):
+    from src.utils.loop import validate_pressure_feedback_grid
+    with pytest.raises(ValueError, match="rho_edge"):
+        validate_pressure_feedback_grid({}, edge)
+
+
+def test_frozen_equilibrium_allows_truncated_transport():
+    from src.utils.loop import validate_pressure_feedback_grid
+    validate_pressure_feedback_grid({"loop": {"rerun": {"stage1": False}}}, .7)
