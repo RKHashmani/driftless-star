@@ -18,8 +18,8 @@
 
 ## Stage 1 -- Equilibrium
 
-- [ ] vmec/vmec_jax and DESC do not have directly compatible inputs; an adapter or input translation layer will be needed to support both implementations behind the same pipeline entry point
-- [ ] vmec_jax only consumes a subset of the full VMEC INDATA file; need to document which fields are supported/ignored, or validate inputs to warn when unsupported fields are present
+- [ ] VMEX and DESC do not have directly compatible inputs. An adapter or input translation layer is needed to support both implementations behind the same pipeline entry point
+- [ ] Document which VMEC INDATA fields the pinned VMEX revision supports or ignores, and decide how the pipeline should handle unsupported fields
 - [ ] DESC can output Boozer coordinates directly, so with the right flag/argument it can handle both Stage 1 and Stage 2; the pipeline should support this shortcut path
 
 ## Stage 2 -- Boozer Transform

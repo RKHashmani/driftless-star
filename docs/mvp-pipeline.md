@@ -6,7 +6,7 @@
    v                          v                         v
 ┌────────┐  NetCDF  ┌──────────────┐  NetCDF  ┌──────────────────────┐
 │Stage 1 │ -------> │   Stage 2    │ -------> │      Stage 3         │
-│vmec_jax│ wout_*.nc│booz_xform_jax│boozmn_*.nc│        SFINCS        │
+│  VMEX  │ wout_*.nc│booz_xform_jax│boozmn_*.nc│        SFINCS        │
 └────────┘          └──────────────┘          └──────────┬───────────┘
                           |                              |
                           |                              v
@@ -46,13 +46,14 @@ inputs/quick_run/
 
 stages/
 ├── common/                 profile_gradients.py, neopax_geometry.py, neopax_profiles.py
+├── stage1-equilibrium/     run_vmex.py
 ├── stage2-boozer/          run_boozer.py
 ├── stage3-neoclassical/    sfincs_jax_radial_scan.py
 ├── stage4-turbulence/      gkx_radial_scan.py
 └── stage5-post-processing/ fit_vmec_pressure_from_transport_h5.py, stage5_post_processing.py
 ```
 
-Stages 1 and 5 (transport) have no wrapper script: Snakemake invokes their installed binaries (`vmec_jax`, `neopax`) directly.
+Stage 1 uses `run_vmex.py` to preserve the requested output filename and publish only a successful solve. Stage 5 transport invokes the installed `neopax` binary directly.
 
 `stages/common/` is not a stage. It holds the modules more than one stage needs, currently the NumPy port of NEOPAX's cell-variable face operators (`profile_gradients.py`), the minor radius NEOPAX builds its radial grid on (`neopax_geometry.py`), and the adapter turning any of the three profile sources into NEOPAX's face state on the transport face grid (`neopax_profiles.py`), which is what Stage 3's and Stage 4's radial scans both read their `--profiles-source` through. A stage script is invoked as a plain file, so its own directory is all that `sys.path` gets; every launcher instead puts `stages/` on `PYTHONPATH` (`/work/stages` in the container prefixes, `$PIXI_PROJECT_ROOT` in the pixi scan tasks), which makes the package importable from any stage as `common.<module>`.
 
@@ -66,7 +67,7 @@ To define your own run, copy `inputs/quick_run/` to `inputs/<your_run>/`, repoin
 
 ## Stage 1 -- Equilibrium
 
-**Code:** vmec_jax
+**Code:** VMEX
 
 | Direction                     | Format                                    | Location                                                                        |
 | ----------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- |
@@ -82,14 +83,16 @@ To define your own run, copy `inputs/quick_run/` to `inputs/<your_run>/`, repoin
 From the repo root
 
 ```
-pixi install --manifest-path stages/pixi.toml --environment stage-1-vmec
+pixi install --manifest-path stages/pixi.toml --environment stage-1-vmex
 ```
 
 ### How to Run
 
 ```
-pixi run --manifest-path stages/pixi.toml stage-1-vmec
+pixi run --manifest-path stages/pixi.toml stage-1-vmex
 ```
+
+The task uses the [Stage 1 adapter](stage1-equilibrium/spec.md#api-documentation) with explicit input and output paths and a default `--device auto`, while Snakemake explicitly selects `cpu` or `gpu`.
 
 ---
 
@@ -103,7 +106,7 @@ pixi run --manifest-path stages/pixi.toml stage-1-vmec
 | **Out**   | NetCDF `boozmn_*.nc` | `outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc` |
 
 > [!NOTE]
-> Stage 2's JAX driver takes explicit `--wout` and `--output` paths. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run --manifest-path stages/pixi.toml stage-1-vmec` first.
+> Stage 2's JAX driver takes explicit `--wout` and `--output` paths. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run --manifest-path stages/pixi.toml stage-1-vmex` first.
 
 ### How to Install
 
@@ -160,7 +163,7 @@ pixi run --manifest-path stages/pixi.toml stage-3-sfincs
 ```
 
 > [!NOTE]
-> The pixi `stage-3-sfincs` task and the Snakemake `stage3_prepare` checkpoint both pass the wout path to `sfincs_jax` via `--wout-path`, overriding the namelist `equilibriumFile` field. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run --manifest-path stages/pixi.toml stage-1-vmec` first. The `sfincs_fortran` backend has no CLI override and still reads `equilibriumFile` from the namelist.
+> The pixi `stage-3-sfincs` task and the Snakemake `stage3_prepare` checkpoint both pass the wout path to `sfincs_jax` via `--wout-path`, overriding the namelist `equilibriumFile` field. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run --manifest-path stages/pixi.toml stage-1-vmex` first. The `sfincs_fortran` backend has no CLI override and still reads `equilibriumFile` from the namelist.
 
 
 **Code:** SFINCS (Fortran)
@@ -204,7 +207,7 @@ pixi run --manifest-path stages/pixi.toml stage-3-sfincs-fortran
 | **Out**   | HDF5 + JSON + CSV       | `outputs/quick_run/stage4_turbulence/{flux_summary.h5, manifest.json, runs.csv}` (aggregated scan) |
 
 > [!NOTE]
-> The TOML's `vmec_file` points into `outputs/quick_run/stage1_equilibrium/`. Populate this directory by running `pixi run --manifest-path stages/pixi.toml stage-1-vmec` first.
+> The TOML's `vmec_file` points into `outputs/quick_run/stage1_equilibrium/`. Populate this directory by running `pixi run --manifest-path stages/pixi.toml stage-1-vmex` first.
 
 ### How to Install
 
@@ -309,8 +312,8 @@ End to end for Stage 3 (Stage 4 has the same shape), Snakemake plans demand-firs
 
 1. `rule all` needs the Stage 5 output, whose rule inputs the Stage 3 HDF5; the producer of that file is `stage3_collect`.
 2. `stage3_collect` declares two inputs: the manifest file and the gather function. Evaluating the function calls `checkpoints.stage3_prepare.get()`, which signals "checkpoint not run yet", so the per-surface input list is deferred.
-3. The manifest demand schedules `checkpoint stage3_prepare`, whose own inputs pull in `stage1_vmec` (the wout) and `stage2_boozer` (the boozmn) upstream.
-4. Execution starts: `stage1_vmec` then `stage2_boozer` run, then `stage3_prepare` runs and writes `manifest.json` plus each surface's inputs under `runs/<surf>/`.
+3. The manifest demand schedules `checkpoint stage3_prepare`, whose own inputs pull in `stage1_vmex` (the wout) and `stage2_boozer` (the boozmn) upstream.
+4. Execution starts: `stage1_vmex` then `stage2_boozer` run, then `stage3_prepare` runs and writes `manifest.json` plus each surface's inputs under `runs/<surf>/`.
 5. Checkpoint completion triggers the DAG re-evaluation: the gather function runs again, now reads the manifest, and returns the per-surface `runs/<surf>/result.json` paths (5 for quick_run).
 6. Each returned path is wildcard-matched to `stage3_run_one`'s output pattern, minting one job per surface; they execute up to `--cores` at a time.
 7. Once every `result.json` exists, `stage3_collect` finally has a complete input set, runs, and reduces them into the stage HDF5, unblocking Stage 5.
@@ -477,7 +480,7 @@ pixi run driftless-star --max-iters 3 --cores 4
 | `--htcondor-jobdir` | the profile's `htcondor-jobdir` | Per-run directory for HTCondor's logs. Parallel controllers need distinct values (see [Where the logs go](../executors/htcondor/README.md#where-the-logs-go)). |
 
 > [!NOTE]
-> Each iteration is a full forward pass, so Docker must be running and all stage images must be available (the loop exercises `stage-1-vmec` through `stage-5-neopax`; the post-processing step reuses the Stage 5 image). The driver runs on the orchestration `pipeline` env, like Snakemake itself.
+> Each iteration is a full forward pass, so Docker must be running and all stage images must be available (the loop exercises `stage-1-vmex` through `stage-5-neopax`; the post-processing step reuses the Stage 5 image). The driver runs on the orchestration `pipeline` env, like Snakemake itself.
 
 ### What it does
 

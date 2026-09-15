@@ -274,7 +274,7 @@ python -m gkx.cli run --config inputs/quick_run/HSX_vacuum_ns201_quickrun.toml -
 **Output:** the `stage-4-gkx-radial-scan` collect step writes `outputs/quick_run/stage4_turbulence/neopax_fluxes.h5` (+ `flux_summary.h5`, `manifest.json`, `runs.csv`); the single-run task above writes under its own `--out` prefix.
 
 > [!NOTE]
-> The TOML's `vmec_file` points into `outputs/quick_run/stage1_equilibrium/`. Populate this directory by running `pixi run stage-1-vmec` first. The VMEC geometry path also requires `booz_xform_jax` at runtime (lazy dependency).
+> The TOML's `vmec_file` points into `outputs/quick_run/stage1_equilibrium/`. Populate this directory by running `pixi run stage-1-vmex` first. The VMEC geometry path also requires `booz_xform_jax` at runtime (lazy dependency).
 
 See `docs/mvp-pipeline.md` for full I/O details.
 

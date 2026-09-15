@@ -471,7 +471,7 @@ pixi run stage-3-sfincs
 ```
 
 > [!NOTE]
-> The pixi task and the Snakemake `stage3_prepare` checkpoint both pass the wout path to `sfincs_jax` via `--wout-path`. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run stage-1-vmec` first. The namelist's `equilibriumFile` field is retained as a fallback for the `sfincs_fortran` backend and for direct `sfincs_jax` invocations that omit `--wout-path`.
+> The pixi task and the Snakemake `stage3_prepare` checkpoint both pass the wout path to `sfincs_jax` via `--wout-path`. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run stage-1-vmex` first. The namelist's `equilibriumFile` field is retained as a fallback for the `sfincs_fortran` backend and for direct `sfincs_jax` invocations that omit `--wout-path`.
 
 **Input:** `outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc` + `inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun`
 **Output:** `outputs/quick_run/stage3_neoclassical/sfincs_jax_flux_profiles.h5`
