@@ -136,7 +136,7 @@ def resolve_rerun_flags(config: dict) -> dict[str, bool]:
 def resolve_pressure_profile_type(config: dict) -> str:
     """Return the validated pressure export mode."""
     loop = _read_optional_mapping(config, "loop", "config['loop']", "loop settings")
-    value = loop.get("pressure_profile_type", "akima_spline")
+    value = loop.get("pressure_profile_type", "power_series")
     if value not in PRESSURE_PROFILE_TYPES:
         raise ValueError(f"loop.pressure_profile_type must be one of {PRESSURE_PROFILE_TYPES}, got {value!r}")
     return value

@@ -486,7 +486,7 @@ pixi run driftless-star --max-iters 3 --cores 4
 
 Each iteration runs as an independent Snakemake pass with `input_dir`/`output_dir` overridden to that iteration's `outputs/<run>/loop/iter_N/{input,output}/`, targeting the **convergence signal file** rather than the default `rule all`. Targeting the signal pulls in `rule stage5_post_processing`, so the chain built is Stage 1 → … → Stage 5 → post-processing. Inside the Stage 5 container, post-processing:
 
-1. **Exports pressure** from this pass's `transport_solution.h5` into a copy of its Stage 1 input. The default `akima_spline` mode writes every `rho_face**2` knot to `AM_AUX_S`. It writes the sum of all species' face pressure to `AM_AUX_F`. The writer multiplies NEOPAX pressure once by `16021.76634` to give pascals. It sets `PRES_SCALE` to `1`. The workflow declares the feedback file under `outputs/<run>/loop/iter_N/output/stage5_post_processing/`. The writer does not change the committed input. When Stage 1 is configured as frozen, this step copies the unchanged input. It logs that it skipped pressure export. This also applies in iteration 1.
+1. **Exports pressure** from this pass's `transport_solution.h5` into a copy of its Stage 1 input. The default `power_series` mode fits a polynomial to the total face pressure. Both spline modes write every `rho_face**2` knot to `AM_AUX_S`. They write the sum of all species' face pressure to `AM_AUX_F`. The writer multiplies NEOPAX pressure once by `16021.76634` to give pascals. It sets `PRES_SCALE` to `1`. The workflow declares the feedback file under `outputs/<run>/loop/iter_N/output/stage5_post_processing/`. The writer does not change the committed input. When Stage 1 is configured as frozen, this step copies the unchanged input. It logs that it skipped pressure export. This also applies in iteration 1.
 2. **Prescribes** the evolved kinetic profiles: it copies this pass's `common_input.toml` and replaces the whole `[profiles]` section with `model = "prescribed"` plus the density, temperature, `Er` and face-gradient arrays of the transport solution's final time slice, writing the copy to a *declared* `profiles_feedback` output beside the evolved boundary (`write_prescribed_profiles_from_transport_h5.py ... --output-toml`). The same writer advances `[transport_solver].t0` and `dt` to the solution's `final_time` and `next_dt`. The next pass then continues the transport window instead of re-integrating it. Once the clock is at or past `t_final`, the writer leaves both keys unchanged. Everything else is copied through unchanged, so the result is a drop-in template for the next pass.
 3. **Checks convergence** (`stage5_post_processing.py`), writing `converge_status.json` alongside them.
 
@@ -520,14 +520,14 @@ Values are SI, matching what NEOPAX's prescribed-profile model consumes: density
 
 ### Pressure interpolation
 
-This feedback applies to any equilibrium case whose transport grid covers `rho = 0` through `rho = 1`. It does not depend on a particular device. The committed `quick_run` case uses the full-radius default. It selects Akima explicitly.
+This feedback applies to any equilibrium case whose transport grid covers `rho = 0` through `rho = 1`. It does not depend on a particular device. The committed `quick_run` case uses the full-radius default. It selects `power_series` explicitly. To use Akima, set the following option in the run config.
 
 ```yaml
 loop:
   pressure_profile_type: akima_spline
 ```
 
-The choices are `akima_spline`, `cubic_spline`, and `power_series`. If you omit the setting, the workflow selects Akima. Both spline modes pass the supplied samples directly to VMEX. The writer keeps the axis and edge samples. It rejects more than 101 spline knots. It requires finite, strictly increasing radii that span `[0, 1]`. It corrects endpoint roundoff only within `1e-12`. Pressure must be finite and non-negative. The writer does not extrapolate or rescale truncated grids. When Stage 1 evolves, the loop driver rejects a configured `rho_edge < 1`. The writer then checks the actual grid.
+The choices are `akima_spline`, `cubic_spline`, and `power_series`. If you omit the setting, the workflow selects `power_series`. Both spline modes pass the supplied samples directly to VMEX. The writer keeps the axis and edge samples. It rejects more than 101 spline knots. It requires finite, strictly increasing radii that span `[0, 1]`. It corrects endpoint roundoff only within `1e-12`. Pressure must be finite and non-negative. The writer does not extrapolate or rescale truncated grids. When Stage 1 evolves, the loop driver rejects a configured `rho_edge < 1`. The writer then checks the actual grid.
 
 The [pinned VMEX profile implementation](https://github.com/uwplasma/vmex/blob/35e7170a24ab33fce4d4d25dc7f448279c279e7f/vmex/core/profiles.py) evaluates both spline types in pascals. Interpolation between samples can overshoot or change gradient sign. The writer does not clip or smooth samples. Splines do not guarantee better equilibrium convergence.
 
@@ -537,7 +537,7 @@ Run the loop with `quick_run` using the existing stage images.
 pixi run driftless-star --config inputs/quick_run/config.yaml --max-iters 2 --cores 4
 ```
 
-The convergence signal can stop the loop before two iterations. To compare a polynomial profile manually, select `power_series`. Only polynomial mode accepts `--degree` and `--drop-axis`.
+The convergence signal can stop the loop before two iterations. The pressure writer also defaults to `power_series`. To export a polynomial profile manually, run the following command. Only polynomial mode accepts `--degree` and `--drop-axis`.
 
 ```bash
 python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py \

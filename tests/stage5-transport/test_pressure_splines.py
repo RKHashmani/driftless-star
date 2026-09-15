@@ -49,9 +49,11 @@ def run_export(tmp_path, monkeypatch, source, *options):
     return output.read_text()
 
 
-@pytest.mark.parametrize("profile_type", ["akima_spline", "cubic_spline", "power_series"])
+@pytest.mark.parametrize("profile_type", [None, "akima_spline", "cubic_spline", "power_series"])
 def test_cli_exports_selected_mode_in_pascals(tmp_path, monkeypatch, profile_type):
-    text = run_export(tmp_path, monkeypatch, transport_input(tmp_path), "--profile-type", profile_type)
+    options = [] if profile_type is None else ["--profile-type", profile_type]
+    text = run_export(tmp_path, monkeypatch, transport_input(tmp_path), *options)
+    profile_type = profile_type or "power_series"
     expected = NATIVE_PRESSURE[-1] * 16021.76634
     assert f"PMASS_TYPE = '{profile_type}'" in text
     assert "PRES_SCALE = 1.0000000000000000E+00" in text
@@ -67,7 +69,7 @@ def test_cli_exports_selected_mode_in_pascals(tmp_path, monkeypatch, profile_typ
 @pytest.mark.parametrize("form", ["pressure", "density_temperature"])
 def test_cli_converts_each_input_form_once(tmp_path, monkeypatch, form):
     source = transport_input(tmp_path, form)
-    text = run_export(tmp_path, monkeypatch, source)
+    text = run_export(tmp_path, monkeypatch, source, "--profile-type", "akima_spline")
     assert "PMASS_TYPE = 'akima_spline'" in text
     assert_array_equal(array(text, "AM_AUX_F"), NATIVE_PRESSURE[-1] * 16021.76634)
     _, native, _ = writer._load_total_pressure(source, time_index=-1, final_time=False)
@@ -78,7 +80,7 @@ def test_cli_converts_each_input_form_once(tmp_path, monkeypatch, form):
     ([], 1), (["--time-index", "0"], 0), (["--time-index", "0", "--final-time"], 1),
 ])
 def test_cli_preserves_time_selection(tmp_path, monkeypatch, selection, expected_index):
-    text = run_export(tmp_path, monkeypatch, transport_input(tmp_path), *selection)
+    text = run_export(tmp_path, monkeypatch, transport_input(tmp_path), "--profile-type", "akima_spline", *selection)
     assert_array_equal(array(text, "AM_AUX_F"), NATIVE_PRESSURE[expected_index] * 16021.76634)
 
 
@@ -148,7 +150,7 @@ def test_rewrites_complete_assignments_and_preserves_other_input(tmp_path, termi
 
 @pytest.mark.parametrize("options", [["--degree", "2"], ["--drop-axis"]])
 def test_splines_reject_polynomial_options(monkeypatch, options):
-    monkeypatch.setattr(sys, "argv", ["writer", "write-input", "missing.h5", "input", *options])
+    monkeypatch.setattr(sys, "argv", ["writer", "write-input", "missing.h5", "input", "--profile-type", "akima_spline", *options])
     with pytest.raises(SystemExit, match="2"):
         writer.main()
 

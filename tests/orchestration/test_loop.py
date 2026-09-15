@@ -149,9 +149,9 @@ def test_pressure_feedback_rejects_bad_profile_type(value):
         resolve_pressure_profile_type({"loop": {"pressure_profile_type": value}})
 
 
-def test_pressure_feedback_defaults_to_akima():
+def test_pressure_feedback_defaults_to_power_series():
     from src.utils.loop import pressure_feedback_command
-    assert "--profile-type akima_spline" in pressure_feedback_command({})
+    assert "--profile-type power_series" in pressure_feedback_command({})
 
 
 @pytest.mark.parametrize("reuse", [None, "outputs/iter_1"])

@@ -434,7 +434,7 @@ def test_two_iterations_seed_the_exported_spline(monkeypatch, tmp_path):
     from tests.helpers.stage_import import load_stage_module
 
     writer = load_stage_module("stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py")
-    config_path = _write_config(tmp_path)
+    config_path = _write_config(tmp_path, loop={"pressure_profile_type": "akima_spline"})
     config = yaml.safe_load(config_path.read_text())
     base = resolve_pipeline_paths(config)
     Path(base["s1_input"]).write_text("&INDATA\n AM=1\n/\n")
@@ -454,7 +454,8 @@ def test_two_iterations_seed_the_exported_spline(monkeypatch, tmp_path):
         Path(target).parent.mkdir(parents=True, exist_ok=True)
         with monkeypatch.context() as context:
             context.setattr(sys, "argv", ["writer", "write-input", str(transport), paths["s1_input"],
-                                          "--output-input", paths["s1_feedback"]])
+                                          "--output-input", paths["s1_feedback"],
+                                          "--profile-type", config["loop"]["pressure_profile_type"]])
             writer.main()
         exported.append(Path(paths["s1_feedback"]).read_text())
         shutil.copyfile(paths["s5_config"], paths["s5_config_feedback"])

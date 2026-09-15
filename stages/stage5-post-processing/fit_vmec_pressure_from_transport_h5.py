@@ -1,10 +1,9 @@
 """Export NEOPAX face pressure to VMEX in pascals.
 
-``write-input`` uses Akima interpolation through every face sample at
-``s = rho_face**2`` by default. It also supports cubic splines and polynomial
-fitting for comparison. ``fit`` prints polynomial coefficients in pascals.
-The shared pressure loader keeps NEOPAX units for convergence and comparison
-functions.
+``write-input`` fits a polynomial in ``s = rho_face**2`` by default.
+Select Akima or cubic splines to interpolate through every face sample.
+``fit`` prints polynomial coefficients in pascals. The shared pressure loader
+keeps NEOPAX units for convergence and comparison functions.
 """
 
 from __future__ import annotations
@@ -301,7 +300,7 @@ def main() -> None:
         help="Export pressure from transport_solution.h5 into a VMEC input file",
     )
     _add_common(write_parser)
-    write_parser.add_argument("--profile-type", choices=PROFILE_TYPES, default="akima_spline")
+    write_parser.add_argument("--profile-type", choices=PROFILE_TYPES, default="power_series")
     write_parser.add_argument("vmec_input", type=Path, help="Path to VMEC input.* file to update")
     write_parser.add_argument(
         "--output-input",
