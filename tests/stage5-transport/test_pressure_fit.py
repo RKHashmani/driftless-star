@@ -8,7 +8,6 @@ so it loads with no solver present.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,6 +166,27 @@ def test_load_total_pressure_missing_face_profiles_raises(tmp_path: Path) -> Non
         fit_mod._load_total_pressure(bad, time_index=-1, final_time=False)
 
 
+# A NaN in the selected slice can enter the fitted AM coefficients and cause a later failure in VMEC.
+# The loader rejects a NaN when it reads either dataset. It also checks `rho_face` because the fit uses
+# s = rho**2.
+@pytest.mark.parametrize("broken", ["pressure", "rho"])
+def test_non_finite_slice_raises(tmp_path: Path, broken: str) -> None:
+    rho_face = _face_grid()
+    total_face = 1.0 - 0.5 * rho_face**2
+    if broken == "pressure":
+        total_face[2] = np.nan
+        expected = "total pressure holds non-finite values"
+    else:
+        rho_face[3] = np.inf
+        expected = "rho holds non-finite values"
+    f = _write_total_pressure(
+        tmp_path / "nonfinite.h5", rho_face=rho_face, total_face=total_face,
+        total_center=1.0 - 0.5 * _center_grid() ** 2,
+    )
+    with pytest.raises(ValueError, match=expected):
+        fit_mod._load_total_pressure(f, time_index=-1, final_time=True)
+
+
 # VMEC evaluates the fitted power series over the whole of s = rho**2 in [0, 1], so the fit's data must reach
 # rho = 1. NEOPAX's cell centers stop at 1 - 1/(2n), while the faces include rho = 1. Asserts the fitted series
 # reproduces the pedestal at both s = 1 and s = 0 to 1%, at n_radial 5, 10 and 20.
@@ -182,8 +202,8 @@ def test_fit_recovers_the_edge_of_a_pedestal_profile(tmp_path: Path, n_radial: i
 
     coeffs, _, _ = fit_mod._fit_from_args(_args(solution))
 
-    assert_allclose(polyval(1.0, coeffs), _pedestal(1.0), rtol=1e-2)  # plasma edge, s = 1
-    assert_allclose(polyval(0.0, coeffs), _pedestal(0.0), rtol=1e-2)  # magnetic axis, s = 0
+    assert_allclose(polyval(1.0, coeffs), _pedestal(1.0) * 16021.76634, rtol=1e-2)  # plasma edge, s = 1
+    assert_allclose(polyval(0.0, coeffs), _pedestal(0.0) * 16021.76634, rtol=1e-2)  # magnetic axis, s = 0
 
 
 # `--drop-axis` keeps the magnetic-axis sample out of the fit, and the face grid's first point is rho = 0. A
@@ -201,29 +221,18 @@ def test_drop_axis_excludes_the_axis_sample(tmp_path: Path) -> None:
     kept, _, _ = fit_mod._fit_from_args(_args(solution, degree=1, drop_axis=False))
     dropped, _, _ = fit_mod._fit_from_args(_args(solution, degree=1, drop_axis=True))
 
-    assert_allclose(dropped, [1.0, -0.5], atol=1e-12)  # the clean line, axis sample gone
-    assert not np.allclose(kept, [1.0, -0.5], atol=1e-3)  # the outlier still drags the fit
+    assert_allclose(dropped, np.array([1.0, -0.5]) * 16021.76634, atol=1e-9)  # the clean line, axis sample gone
+    assert not np.allclose(kept, dropped, atol=1e-3)  # the outlier still drags the fit
 
 
-# On a grid whose first radius is not the axis, dropping it would discard a real innermost data point. Asserts
-# the flag is skipped, the fit is unchanged, and a warning naming --drop-axis is logged.
-def test_drop_axis_skipped_with_a_log_when_first_radius_is_not_the_axis(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    rho_face = np.linspace(0.2, 1.0, 6)  # a radial grid whose first point is not rho = 0
-    total = 1.0 - 0.5 * rho_face**2
-    total[0] = 10.0
+@pytest.mark.parametrize("drop_axis", [False, True])
+def test_polynomial_rejects_missing_axis(tmp_path: Path, drop_axis: bool) -> None:
+    rho = np.linspace(0.2, 1.0, 6)
     solution = _write_total_pressure(
-        tmp_path / "off_axis.h5", rho_face=rho_face, total_face=total,
-        total_center=1.0 - 0.5 * (0.5 * (rho_face[:-1] + rho_face[1:])) ** 2,
+        tmp_path / "off_axis.h5", rho_face=rho, total_face=np.ones(6), total_center=np.ones(5),
     )
-
-    kept, _, _ = fit_mod._fit_from_args(_args(solution, degree=1, drop_axis=False))
-    with caplog.at_level(logging.WARNING, logger=fit_mod.__name__):
-        requested, _, _ = fit_mod._fit_from_args(_args(solution, degree=1, drop_axis=True))
-
-    assert_allclose(requested, kept, rtol=1e-12)  # nothing was dropped
-    assert "--drop-axis" in caplog.text
+    with pytest.raises(ValueError, match="spanning"):
+        fit_mod._fit_from_args(_args(solution, degree=1, drop_axis=drop_axis))
 
 
 # This is the feedback step that turns the fitted pressure back into a VMEC input file for the next loop iteration.
