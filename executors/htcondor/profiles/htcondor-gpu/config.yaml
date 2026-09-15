@@ -40,7 +40,7 @@ set-resources:
     request_memory: "64GB"
 
 set-threads:
-  stage1_vmec: 4
+  stage1_vmex: 4
   stage2_boozer: 4
   stage3_prepare: 4
   stage3_run_one: 4

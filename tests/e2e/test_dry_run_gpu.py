@@ -4,8 +4,8 @@
 command without starting a container, so the three modes can be told apart from the
 planned text alone on a machine with no GPU and no Docker.
 
-What is pinned here is the boundary between the modes. A cpu run must plan no device
-flag at all, while both GPU modes must route every device-taking container launch
+What is pinned here is the boundary between the modes. A cpu run must plan no GPU
+container flag, while both GPU modes must route every device-taking container launch
 through the allocator, because one unwrapped launch would take a device the allocator
 believes is free. Steps that only rewrite a file are planned with neither a device nor
 the allocator and are counted out, since the guarantee is that no launch reaches a
@@ -44,16 +44,16 @@ def _launch_counts(output: str) -> tuple[int, int, int]:
     return output.count("docker run") - device_free, output.count("src.gpu_slots"), device_free
 
 
-# The committed config runs on cpu, so the default plan must carry no device flag and no allocator, and must select the
+# The committed config runs on cpu, so the default plan must carry no GPU container flag or allocator, and must select the
 # cpu image variant for every stage. Passing gpu_ids=null on the command line is the same request written the other way,
 # and snakemake's config parser keeps it as the plain text "null", so this pins that both spellings plan the same run.
-def test_null_pool_plans_cpu_images_with_no_device_flag(tmp_path: Path) -> None:
+def test_null_pool_plans_cpu_images_with_no_gpu_container_flag(tmp_path: Path) -> None:
     result = _dry_run(tmp_path, targets=[], config_overrides=["gpu_ids=null"], printshellcmds=True)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert "--gpus" not in output, output
     assert "src.gpu_slots" not in output, output
-    assert "stage-1-vmec-cpu" in output, output
+    assert "stage-1-vmex-cpu" in output, output
 
 
 # Naming the host instead of a pool still pins every job to one device, so an "all" run must be wrapped exactly like an
@@ -66,7 +66,9 @@ def test_all_plans_wrapped_containers_pinned_to_one_device(tmp_path: Path) -> No
     assert result.returncode == 0, output
     assert ALL_SLOT_PREFIX in output, output
     assert "--gpus device=@GPU_ID@" in output, output
-    assert "stage-1-vmec-gpu" in output, output
+    assert "stage-1-vmex-gpu" in output, output
+    stage1_command = next(line for line in output.splitlines() if "run_vmex.py" in line)
+    assert "--device gpu" in stage1_command, output
     assert "--gpus all" not in output, output
     # device_taking == allocated == the device-flag count leaves the device-free launches provably
     # holding no device, since the three totals account for every planned launch.
@@ -86,7 +88,7 @@ def test_pinned_pool_wraps_every_planned_container(tmp_path: Path) -> None:
     assert result.returncode == 0, output
     assert SLOT_PREFIX in output, output
     assert "--gpus device=@GPU_ID@" in output, output
-    assert "stage-1-vmec-gpu" in output, output
+    assert "stage-1-vmex-gpu" in output, output
     device_taking, allocated, _ = _launch_counts(output)
     assert device_taking > 0, output
     assert device_taking == allocated, output
