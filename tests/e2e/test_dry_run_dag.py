@@ -239,6 +239,10 @@ def test_perturbed_manifest_expands_fan_out(tmp_path: Path) -> None:
         os.utime(artifact, (newest_input + 100, newest_input + 100))
     manifest = Path(paths["stage4_manifest"])
     manifest.parent.mkdir(parents=True, exist_ok=True)
+    for surface in ("rho_001_r0p2500", "rho_001_r0p2500_fd_n_D"):
+        runtime_input = manifest.parent / "runs" / surface / "input.toml"
+        runtime_input.parent.mkdir(parents=True, exist_ok=True)
+        runtime_input.write_text("[physics]\nbeta = 0.0\n")
     manifest.write_text(
         json.dumps(
             {
@@ -255,6 +259,74 @@ def test_perturbed_manifest_expands_fan_out(tmp_path: Path) -> None:
     assert result.returncode == 0, output
     assert "stage4_run_one" in output, output
     assert "rho_001_r0p2500_fd_n_D" in output, output
+
+
+def _prepared_stage4_surface(tmp_path: Path) -> tuple[dict, Path]:
+    """Write the artifacts needed to expand a prepared Stage 4 checkpoint."""
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    paths = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/out")
+    for key in ("s1_output", "s2_output"):
+        artifact = Path(paths[key])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("prepared equilibrium\n")
+    run_dir = Path(paths["stage4_dir"]) / "runs" / "rho_001_r0p2500"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "input.toml").write_text("[physics]\nbeta = 0.0\n")
+    Path(paths["stage4_manifest"]).write_text(json.dumps({
+        "schema_version": 3, "runs": [{"run_dir": str(run_dir)}],
+    }))
+    (run_dir / "run.diagnostics.csv").write_text("t,heat_flux,particle_flux\n1,2,3\n")
+    return paths, run_dir
+
+
+def test_stage4_existing_diagnostics_without_completion_schedules_worker(tmp_path: Path) -> None:
+    paths, run_dir = _prepared_stage4_surface(tmp_path)
+    result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "rule stage4_run_one:" in output, output
+    assert str(run_dir / "run.completion.json") in output, output
+    assert "Missing output files" in output, output
+
+
+def test_stage4_runtime_input_edit_schedules_worker(tmp_path: Path) -> None:
+    paths, run_dir = _prepared_stage4_surface(tmp_path)
+    (run_dir / "run.completion.json").write_text("{}\n")
+    result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "rule stage4_run_one:" not in output, output
+    runtime_input = run_dir / "input.toml"
+    runtime_input.write_text("[physics]\nbeta = 0.05\n")
+    newer = (run_dir / "run.completion.json").stat().st_mtime + 2.0
+    os.utime(runtime_input, (newer, newer))
+    result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "rule stage4_run_one:" in output, output
+    assert str(runtime_input) in output, output
+    assert "Updated input files" in output, output
+
+
+def test_frozen_stage4_reuses_flux_without_surface_completion_markers(tmp_path: Path) -> None:
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    reuse = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/reuse")
+    for key in ("s1_output", "s2_output", "s3_output", "s4_output"):
+        artifact = Path(reuse[key])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("frozen artifact\n")
+    overrides = _write_loop_overrides(
+        tmp_path,
+        rerun={"stage1": False, "stage2": False, "stage3": False, "stage4": False, "stage5": True},
+        reuse_output_dir=reuse["output_dir"],
+    )
+    result = _dry_run(tmp_path, targets=[], config_overrides=[], extra_configfiles=[str(overrides)])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    for rule in ("stage4_prepare", "stage4_run_one", "stage4_collect"):
+        assert f"rule {rule}:" not in output, output
+    assert "rule stage5_neopax:" in output, output
+    assert reuse["s4_output"] in output, output
 
 
 # From iteration 2 with frozen stages, the driver's overrides file names the iteration 1 tree and restates the validated
@@ -369,3 +441,20 @@ def test_reuse_tree_with_all_frozen_fails_at_parse(tmp_path: Path) -> None:
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "freezes every stage" in output, output
+
+
+def test_profile_parameter_settings_survive_loop_override(tmp_path: Path) -> None:
+    enabled = tmp_path / "profile-parameters.yaml"
+    enabled.write_text(yaml.safe_dump({"stage4": {"gkx": {
+        "beta_source": "profiles", "collisionality_source": "profiles",
+        "collisionality_scaling_factor": 0.25,
+    }}}))
+    loop_override = _write_loop_overrides(tmp_path)
+    result = _dry_run(tmp_path, targets=[], config_overrides=[],
+                      extra_configfiles=[str(enabled), str(loop_override)], printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    command = next(line for line in output.splitlines() if "gkx_radial_scan.py prepare" in line)
+    for value in ("--profiles-source prescribed", "--beta-source profiles",
+                  "--collisionality-source profiles", "--collisionality-scaling-factor 0.25"):
+        assert value in command

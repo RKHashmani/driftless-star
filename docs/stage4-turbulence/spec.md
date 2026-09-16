@@ -324,3 +324,25 @@ See [guide](../guide.md#container-architecture) for full architecture details.
 > [!TODO]
 > Create dev, operational, and cross-stage Claude skills for GKX and GX workflows.
 > See [guide](../guide.md#step-7-create-claude-skills) for skill types.
+
+## Profile beta and self-collisionality
+
+To calculate beta and species self-collision frequencies from the NEOPAX face state and VMEC geometry, set these values under `stage4.gkx`.
+
+```yaml
+beta_source: profiles
+collisionality_source: profiles
+collisionality_scaling_factor: 1.0
+```
+
+Each source independently accepts `fixed` or `profiles` and defaults to `fixed`. Fixed beta uses the CLI value, then the template value, then zero. Fixed ion and electron collision frequencies default to 0.01 and 0.0. The scaling factor must be finite and nonnegative. It affects only profile collision frequencies. A value of 0.0 disables collisions in profile mode.
+
+Profile beta does not enable electromagnetic physics. In the GKX template, enable `physics.electromagnetic`, the desired `physics.use_apar` and/or `physics.use_bpar` fields, and their `terms.apar` and/or `terms.bpar` weights. The shipped template disables electromagnetic physics, so its effective beta stays zero. Existing collision and hypercollision switches and term weights still apply.
+
+The pipeline and radial scan calculate parameters each time they prepare inputs, including the first run. They use the selected analytical, prescribed, or transport-HDF5 face state and requested time slice. Gradient perturbations keep their base surface's beta and collision frequencies. Stage 5 feedback uses prescribed profiles. A frozen Stage 4 reuses its flux file. Direct `gkx run` does not perform these calculations. The CLI equivalents are `--beta-source`, `--collisionality-source`, and `--collisionality-scaling-factor`.
+
+The formulas follow [pinned T3D Species.py](https://api.bitbucket.org/2.0/repositories/gyrokinetics/t3d/src/74a06dfdf8e005e6bc72ef79859413ba69abd626/t3d/Species.py). Density is in 1e20 m^-3, temperature in keV, and mass in proton units. Beta is `0.0403 n_ref T_ref / B_ref^2`. The self-collision rate is `285 Z^4 n lnLambda / (sqrt(A) T^1.5)` in inverse seconds, including electron-electron collisions. GKX receives this rate multiplied by `L_ref / v_ref` and the scaling factor, where `L_ref = Aminor_p`, `B_ref = abs(phi_edge) / (pi L_ref^2)`, and `v_ref = sqrt(1000 e T_ref / m_p)`. VMEC must supply explicit `Aminor_p` and, for beta, `phi`. Invalid physical inputs fail preparation instead of using normalization floors.
+
+`normalization_audit.csv` and `.json` record physical inputs, calculated parameters, and effective field and collision terms. New manifests require successful diagnostics and a completion marker matching the prepared inputs. Changed inputs require preparation again. Collection rejects untrusted results unless `--allow-incomplete` is explicit (`--collect-even-if-failures` in the full scan). Incomplete exports are marked and must not serve as complete transport input. Older manifests retain their previous completion behavior.
+
+Full T3D+GX equivalence remains unverified. Species mass normalization, absolute physical-flux conversion, and collision-operator equivalence are unresolved. This feature preserves the existing mass and flux conventions. The [pinned GKX acceptance script](../../tests/stage4-turbulence/acceptance/pinned_gkx.py) includes reproduction instructions and checks parameter loading and execution, not converged transport agreement.

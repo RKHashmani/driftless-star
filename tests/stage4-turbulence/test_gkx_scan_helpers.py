@@ -211,6 +211,24 @@ def _run_collect(tmp_path: Path, runs: list[dict]) -> Path:
     return Path(args.out)
 
 
+def test_collect_defaults_to_window_mean_when_reducer_is_omitted(tmp_path: Path) -> None:
+    run = _collect_run_spec(tmp_path, 0, 1, 0.5)
+    run["runtime_species"] = [{
+        "name": "D", "mass": 2.0,
+        "density_reference_physical": 1.0, "temperature_reference_physical": 1.0,
+    }]
+    diagnostic = Path(f"{run['output_prefix']}.diagnostics.csv")
+    diagnostic.parent.mkdir(parents=True, exist_ok=True)
+    diagnostic.write_text(
+        "t,heat_flux,particle_flux,heat_flux_s0,particle_flux_s0\n"
+        "0,1,2,1,2\n1,3,4,3,4\n2,8,9,8,9\n"
+    )
+    output = _run_collect(tmp_path, [run])
+    with h5py.File(output, "r") as f:
+        assert_allclose(f["heat_flux_total"][...], [4.0])
+        assert_allclose(f["particle_flux_total"][...], [5.0])
+
+
 # flux_summary.h5 holds one row per executed run, so in fd_gradients mode base and perturbed rows sit at duplicate rho
 # values; the file must carry the run identity as datasets so those rows are distinguishable without joining against
 # runs.csv by row order.
@@ -287,6 +305,14 @@ def test_collect_neopax_perturbed_axis_keyed_by_channel_and_species(tmp_path: Pa
         _collect_run_spec(tmp_path, 4, 2, 0.5, response_label="density_gradient", perturb_species="D", perturb_delta=-0.4),
         _collect_run_spec(tmp_path, 5, 1, 0.25, response_label="density_gradient", perturb_species="T", perturb_delta=-0.3),
     ]
+    for run in runs:
+        diagnostic = Path(f"{run['output_prefix']}.diagnostics.csv")
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic.write_text("t,heat_flux,particle_flux,heat_flux_s0,particle_flux_s0\n0,1,2,1,2\n")
+        run["runtime_species"] = [{
+            "name": "D", "mass": 2.0,
+            "density_reference_physical": 1.0, "temperature_reference_physical": 1.0,
+        }]
     _run_collect(tmp_path, runs)
     with h5py.File(tmp_path / "neopax_fluxes.h5", "r") as f:
         assert f["response_label"].asstr()[...].tolist() == ["temperature_gradient", "density_gradient", "density_gradient"]
@@ -390,7 +416,7 @@ def test_cmd_prepare_dispatches_prescribed_source(tmp_path: Path) -> None:
     ])
     assert scan.cmd_prepare(args) == 0
     manifest = json.loads((out_dir / "manifest.json").read_text())
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert "spectrax_root" not in manifest
     assert manifest["profiles_source"] == "prescribed"
     assert not manifest.get("neopax_result")
