@@ -5,6 +5,7 @@ import posixpath
 from pathlib import Path
 
 from src import stage3_helper, stage4_helper, stage5_helper
+from src.utils.loop import pressure_feedback_command
 from src.utils import (
     resolve_docker_user,
     resolve_gpu_settings,
@@ -31,6 +32,7 @@ DEVICE = GPU.device
 # Per-stage rerun flags for the closed loop, validated at parse time so a bad combination fails before any job runs.
 # Freezing a stage means reading its artifacts from an earlier pass, which takes an address from loop.reuse_output_dir.
 # A plain forward pass and the loop's first iteration therefore always run every stage.
+PRESSURE_FEEDBACK_COMMAND = pressure_feedback_command(config)
 RERUN = resolve_rerun_flags(config)
 REUSE_OUTPUT_DIR = (config.get("loop") or {}).get("reuse_output_dir")
 if REUSE_OUTPUT_DIR is None:
@@ -389,8 +391,7 @@ rule stage5_post_processing:
     log:    f"{P['stage5_post_dir']}/{RUN_NAME}.log"
     shell:
         f'{CONTAINER_PREFIX_CPU}{container_image_location(STAGE5_IMG)} sh -c "'
-        'python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py '
-        'write-input {input.transport} {input.s1_input} --output-input {output.feedback} && '
+        + PRESSURE_FEEDBACK_COMMAND + ' && '
         'python stages/stage5-post-processing/write_prescribed_profiles_from_transport_h5.py '
         '{input.transport} {input.common_config} --output-toml {output.profiles_feedback} && '
         'python stages/stage5-post-processing/stage5_post_processing.py '

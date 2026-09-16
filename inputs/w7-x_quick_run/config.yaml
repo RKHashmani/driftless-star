@@ -40,7 +40,8 @@ convergence:
 # is frozen and loop iterations after the first reuse its iteration 1 output.
 loop:
   rerun:
-    stage1: true
+    # The transport grid stops at rho = 0.7, so keep the equilibrium fixed.
+    stage1: false
     stage2: true
     stage3: true
     stage4: true
