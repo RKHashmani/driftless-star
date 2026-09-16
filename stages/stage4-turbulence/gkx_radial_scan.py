@@ -35,6 +35,15 @@ from typing import Any
 
 import h5py
 import numpy as np
+from profile_parameters import (
+    CONVENTION,
+    geometry_scales,
+    positive,
+    reference_beta,
+    reference_speed,
+    scaling_factor,
+    self_collision,
+)
 from common.neopax_geometry import read_neopax_minor_radius
 from common.neopax_profiles import (
     NEOPAX_DENSITY_REFERENCE_M3,
@@ -162,8 +171,10 @@ def _runtime_toml_text(manifest: dict[str, Any], run_spec: dict[str, Any]) -> st
             f"electromagnetic = {_toml_scalar(phys['electromagnetic'])}",
             f"adiabatic_electrons = {_toml_scalar(phys['adiabatic_electrons'])}",
             "adiabatic_ions = false",
+            f"use_apar = {_toml_scalar(phys.get('use_apar', False))}",
+            f"use_bpar = {_toml_scalar(phys.get('use_bpar', False))}",
             f"tau_e = {_toml_scalar(1.0 if run_spec['tau_e'] is None else run_spec['tau_e'])}",
-            f"beta = {_toml_scalar(phys['beta'])}",
+            f"beta = {_toml_scalar(run_spec.get('beta', phys['beta']))}",
             f"collisions = {_toml_scalar(phys['collisions'])}",
             f"hypercollisions = {_toml_scalar(phys['hypercollisions'])}",
             "",
@@ -583,6 +594,22 @@ def _build_manifest(
             electron_idx = idx
             break
 
+    beta_source = args.beta_source
+    nu_source = args.collisionality_source
+    scale = scaling_factor(args.collisionality_scaling_factor)
+    enabled = "profiles" in (beta_source, nu_source)
+    length, field = None, None
+    if enabled:
+        if str(template_geom.get("model", "vmec")).lower() != "vmec":
+            raise ValueError("Profile beta and collisionality require VMEC geometry")
+        length, field = geometry_scales(vmec_path, need_field=beta_source == "profiles")
+    fixed_beta = float(_coalesce(args.beta, template_phys.get("beta"), 0.0))
+    parameter_context = {
+        "beta_source": beta_source,
+        "collisionality_source": nu_source,
+        "collisionality_scaling_factor": scale,
+        "calculation_convention": CONVENTION,
+    }
     runs: list[dict[str, Any]] = []
     electron_model_value = electron_model
     if electron_model_value is None:
@@ -655,33 +682,56 @@ def _build_manifest(
         if ref_n <= 0.0 or ref_t <= 0.0:
             raise ValueError(f"Reference density/temperature must stay positive at rho index {rho_idx}")
 
+        context = f"species {ref_species.name} at rho {rho_val} (index {rho_idx})"
+        speed = None
+        raw_ref_n = float(density[ref_idx, rho_idx])
+        raw_ref_t = float(temperature[ref_idx, rho_idx])
+        if enabled:
+            positive(raw_ref_n, context + " reference density")
+            positive(raw_ref_t, context + " reference temperature")
+        if nu_source == "profiles":
+            speed = reference_speed(raw_ref_t, context)
+        beta = reference_beta(raw_ref_n, raw_ref_t, field, context) if beta_source == "profiles" else fixed_beta
         runtime_species: list[dict[str, Any]] = []
         for sp_idx, sp in enumerate(species):
             include = str(electron_model_value).lower() == "kinetic" or sp.charge > 0.0
             if not include:
                 continue
             is_electron = sp.charge < 0.0
-            runtime_species.append(
-                {
-                    "name": sp.name,
-                    "charge": float(sp.charge),
-                    "mass": float(sp.mass_mp),
-                    "density": float(density[sp_idx, rho_idx] / ref_n),
-                    "temperature": float(temperature[sp_idx, rho_idx] / ref_t),
-                    "tprim": float(
-                        args.tprim_scale
-                        * (-temperature_grad[sp_idx, rho_idx] / temperature_denominator[sp_idx, rho_idx])
-                    ),
-                    "fprim": float(
-                        args.fprim_scale * (-density_grad[sp_idx, rho_idx] / density_denominator[sp_idx, rho_idx])
-                    ),
-                    "nu": float(args.nu_electron if is_electron else args.nu_ion),
-                    "density_physical": float(density[sp_idx, rho_idx]),
-                    "temperature_physical": float(temperature[sp_idx, rho_idx]),
-                    "density_reference_physical": ref_n,
-                    "temperature_reference_physical": ref_t,
-                }
-            )
+            runtime_sp = {
+                "name": sp.name,
+                "charge": float(sp.charge),
+                "mass": float(sp.mass_mp),
+                "density": float(density[sp_idx, rho_idx] / ref_n),
+                "temperature": float(temperature[sp_idx, rho_idx] / ref_t),
+                "tprim": float(
+                    args.tprim_scale
+                    * (-temperature_grad[sp_idx, rho_idx] / temperature_denominator[sp_idx, rho_idx])
+                ),
+                "fprim": float(
+                    args.fprim_scale * (-density_grad[sp_idx, rho_idx] / density_denominator[sp_idx, rho_idx])
+                ),
+                "nu": float(args.nu_electron if is_electron else args.nu_ion),
+                "density_physical": float(density[sp_idx, rho_idx]),
+                "temperature_physical": float(temperature[sp_idx, rho_idx]),
+                "density_reference_physical": ref_n,
+                "temperature_reference_physical": ref_t,
+            }
+            runtime_sp["fixed_nu"] = runtime_sp["nu"]
+            runtime_sp["self_collision_rate_s"] = None
+            runtime_sp["coulomb_logarithm"] = None
+            if nu_source == "profiles":
+                rate, logarithm = self_collision(
+                    runtime_sp["density_physical"], runtime_sp["temperature_physical"], runtime_sp["mass"], runtime_sp["charge"],
+                    context=f"species {runtime_sp['name']} at rho {rho_val} (index {rho_idx})",
+                )
+                runtime_sp["self_collision_rate_s"] = rate
+                runtime_sp["coulomb_logarithm"] = logarithm
+                runtime_sp["nu"] = rate * length / speed * scale
+                if not math.isfinite(runtime_sp["nu"]):
+                    raise ValueError(f"species {runtime_sp['name']} at rho {rho_val} collision frequency is not finite")
+
+            runtime_species.append(runtime_sp)
 
         tau_e = None
         if electron_idx is not None:
@@ -712,6 +762,18 @@ def _build_manifest(
         geometry_file = str((run_dir / local_geom_name).resolve())
         config_path = str((run_dir / "input.toml").resolve())
         run_spec = {
+            "beta": beta,
+            "parameter_audit": {
+                **parameter_context,
+                "fixed_beta": fixed_beta,
+                "raw_reference_density": raw_ref_n,
+                "raw_reference_temperature_keV": raw_ref_t,
+                "reference_length_m": length,
+                "reference_field_T": field,
+                "reference_speed_ms": speed,
+                "mass_convention": "m_s / m_p",
+                "mass_convention_status": "inherited wrapper choice, GKX reference-mass compatibility unverified",
+            },
             "index": run_index,
             "rho_index": int(rho_idx),
             "rho": rho_val,
@@ -828,12 +890,14 @@ def _build_manifest(
             else str(_coalesce(args.state_sharding, template_time.get("state_sharding"), "none")),
         },
         "physics": {
+            "use_apar": bool(template_phys.get("use_apar", False)),
+            "use_bpar": bool(template_phys.get("use_bpar", False)),
             "electrostatic": bool(_coalesce(None, template_phys.get("electrostatic"), True)),
             "electromagnetic": bool(_coalesce(None, template_phys.get("electromagnetic"), False)),
             "adiabatic_electrons": str(electron_model_value).lower() == "adiabatic",
             "collisions": bool(_coalesce(None, template_phys.get("collisions"), True)),
             "hypercollisions": bool(_coalesce(None, template_phys.get("hypercollisions"), True)),
-            "beta": float(_coalesce(args.beta, template_phys.get("beta"), 0.0)),
+            "beta": fixed_beta,
         },
         "collisions": {
             "nu_hermite": float(_coalesce(args.nu_hermite, template_coll.get("nu_hermite"), 1.0)),
@@ -937,6 +1001,16 @@ def _write_runs_csv(path: Path, manifest: dict[str, Any]) -> None:
         writer.writerows(rows)
 
 
+def _effective_term(manifest: dict[str, Any], run: dict[str, Any], name: str) -> float:
+    """Return the effective term weight used by pinned GKX startup."""
+    physics = manifest.get("physics", {})
+    if name == "collisions":
+        enabled = physics.get("collisions", True) and any(sp.get("nu", 0.0) != 0.0 for sp in run["runtime_species"])
+    else:
+        enabled = physics.get("electromagnetic", False) and physics.get(f"use_{name}", False)
+    return float(manifest.get("terms", {}).get(name, 0.0)) if enabled else 0.0
+
+
 def _build_normalization_audit_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     electron_model = str(manifest["electron_model"])
@@ -972,6 +1046,20 @@ def _build_normalization_audit_rows(manifest: dict[str, Any]) -> list[dict[str, 
                     "tprim_used": tprim,
                     "tau_e_used": math.nan if tau_e is None else float(tau_e),
                     "Er_input": float(run["Er"]),
+                    **run.get("parameter_audit", {}),
+                    "beta_configured": run.get("beta", manifest.get("physics", {}).get("beta", 0.0)),
+                    "beta_effective": (
+                        run.get("beta", manifest.get("physics", {}).get("beta", 0.0))
+                        if manifest.get("physics", {}).get("electromagnetic", False) else 0.0
+                    ),
+                    "electromagnetic": manifest.get("physics", {}).get("electromagnetic", False),
+                    "apar_term_effective": _effective_term(manifest, run, "apar"),
+                    "bpar_term_effective": _effective_term(manifest, run, "bpar"),
+                    "collisions_term_effective": _effective_term(manifest, run, "collisions"),
+                    "nu_used": sp.get("nu"),
+                    "fixed_nu": sp.get("fixed_nu"),
+                    "self_collision_rate_s": sp.get("self_collision_rate_s"),
+                    "coulomb_logarithm": sp.get("coulomb_logarithm"),
                 }
             )
     return rows
@@ -1955,6 +2043,9 @@ def cmd_all(args: argparse.Namespace) -> int:
         alpha=args.alpha,
         npol=args.npol,
         beta=args.beta,
+        beta_source=args.beta_source,
+        collisionality_source=args.collisionality_source,
+        collisionality_scaling_factor=args.collisionality_scaling_factor,
         nu_hermite=args.nu_hermite,
         nu_laguerre=args.nu_laguerre,
         nu_hyper=args.nu_hyper,
@@ -2034,6 +2125,13 @@ def _add_common_io_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_scaling_factor(value: str) -> float:
+    try:
+        return scaling_factor(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profiles-source", choices=("transport_h5", "analytical", "prescribed"), default="analytical")
     parser.add_argument("--time-index", type=int, default=-1)
@@ -2086,6 +2184,9 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--init-amp", type=float, default=None)
     parser.add_argument("--alpha", type=float, default=None, help="Field-line label alpha for the local geometry")
     parser.add_argument("--npol", type=float, default=None)
+    parser.add_argument("--beta-source", choices=["fixed", "profiles"], default="fixed")
+    parser.add_argument("--collisionality-source", choices=["fixed", "profiles"], default="fixed")
+    parser.add_argument("--collisionality-scaling-factor", type=_parse_scaling_factor, default=1.0)
     parser.add_argument("--beta", type=float, default=None)
     parser.add_argument("--nu-hermite", type=float, default=None)
     parser.add_argument("--nu-laguerre", type=float, default=None)

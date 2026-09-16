@@ -363,3 +363,20 @@ def test_reuse_tree_with_all_frozen_fails_at_parse(tmp_path: Path) -> None:
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "freezes every stage" in output, output
+
+
+def test_profile_parameter_settings_survive_loop_override(tmp_path: Path) -> None:
+    enabled = tmp_path / "profile-parameters.yaml"
+    enabled.write_text(yaml.safe_dump({"stage4": {"gkx": {
+        "beta_source": "profiles", "collisionality_source": "profiles",
+        "collisionality_scaling_factor": 0.25,
+    }}}))
+    loop_override = _write_loop_overrides(tmp_path)
+    result = _dry_run(tmp_path, targets=[], config_overrides=[],
+                      extra_configfiles=[str(enabled), str(loop_override)], printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    command = next(line for line in output.splitlines() if "gkx_radial_scan.py prepare" in line)
+    for value in ("--profiles-source prescribed", "--beta-source profiles",
+                  "--collisionality-source profiles", "--collisionality-scaling-factor 0.25"):
+        assert value in command
