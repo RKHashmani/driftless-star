@@ -126,7 +126,7 @@ Because the executor does not ship Snakemake to the node (it is baked into the p
   Builds `htcondor-runtime.sif` from the root workspace's `htcondor-runtime` environment. That environment carries Snakemake and nothing else: the executor rewrites every remote job into a plain `snakemake --mode remote ...` with no `--executor` flag, so the plugin itself is only ever needed on the submit host. The image additionally installs `apptainer` and `git` globally, since it launches the nested stage containers.
 
 - `profiles/htcondor-gpu/`
-  An example profile, as used on CHTC: `universe=container` with the parent image, one GPU per job, and `/staging` treated as shared rather than transferred. This is the one the commands above use; another pool needs its own `requirements` ClassAd and shared-FS prefixes.
+  An example profile, as used on CHTC: `universe=container` with the parent image, one GPU per solver job, CPU-only preparation, collection, and post-processing, and `/staging` treated as shared rather than transferred. This is the one the commands above use; another pool needs its own `requirements` ClassAd and shared-FS prefixes.
 
 - `job_wrapper.sh`
   Used by the GPU profile as the job executable. The executor hands it the Snakemake arguments with the `python -m snakemake` prefix stripped, and the wrapper runs them with the parent image's one Snakemake, `/app/.pixi/envs/htcondor-runtime/bin/snakemake`. There is no `PATH` fallback: if that path is missing, it dumps diagnostics to stderr and exits non-zero.

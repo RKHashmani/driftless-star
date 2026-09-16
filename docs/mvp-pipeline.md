@@ -348,8 +348,8 @@ To iterate this pass toward transport-consistent profiles instead of stopping at
 Per-invocation overrides via `--config` (layered on top of the config file):
 
 ```
-pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 4 --config gpu_ids=all                    # use -gpu images, one job pinned per host GPU
-pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 8 --config gpu_ids=4,5,6,7 jobs_per_gpu=2 # use -gpu images, pinning each job to one of 8 slots across GPUs 4-7
+pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 4 --config gpu_ids=all                    # use -gpu images, one solver job pinned per host GPU
+pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 8 --config gpu_ids=4,5,6,7 jobs_per_gpu=2 # use -gpu images, pinning each solver job to one of 8 slots across GPUs 4-7
 ```
 
 Defining another run via its own config file:
@@ -373,24 +373,24 @@ Two top-level run-config keys decide which image variant every stage runs and wh
 ```yaml
 # Container runtime GPU pool. One of:
 # null: run every stage on CPU images with no GPU access.
-# "all": run GPU images, pinning each concurrent job to one free GPU of the execution host
-# ids e.g. "4,5,6,7": run GPU images with each concurrent job pinned to one free id from the pool.
+# "all": run GPU images, pinning each concurrent solver job to one free GPU of the execution host
+# ids e.g. "4,5,6,7": run GPU images with each concurrent solver job pinned to one free id from the pool.
 gpu_ids: null
-# Concurrent jobs allowed per GPU.
+# Concurrent solver jobs allowed per GPU.
 jobs_per_gpu: 1
 ```
 
-**How pinning works.** In GPU mode every job's `docker run` is wrapped by the slot allocator (`python -m src.gpu_slots ... -- docker run --gpus device=@GPU_ID@ ...`). An explicit id list is passed through as written; `gpu_ids: "all"` is resolved by the wrapper on the execution host when the job starts, taking the ids `CUDA_VISIBLE_DEVICES` lists when that variable is set (exporting it is the supported way to restrict `"all"` on a shared host) and every GPU `nvidia-smi` reports otherwise. The wrapper takes an exclusive `flock` on one lock file per slot under `.snakemake/gpu_slots/` (relative to the invocation directory, i.e. the repo root), substitutes the acquired id into the command's `@GPU_ID@` token, and holds the lock for the container's whole lifetime. The kernel drops a `flock` when the holding process exits for any reason, so a crashed or cancelled job frees its slot with no stale-lock cleanup. Each job logs `[gpu_slots] acquired GPU <id>`, and a job that finds every slot taken logs one `[gpu_slots] waiting for a free GPU slot` line before it blocks, because a rule's `2>&1 | tee {log}` pipe covers the wrapper as well as the container.
+**How pinning works.** In GPU mode each solver job's `docker run` is wrapped by the slot allocator (`python -m src.gpu_slots ... -- docker run --gpus device=@GPU_ID@ ...`). An explicit id list is passed through as written; `gpu_ids: "all"` is resolved by the wrapper on the execution host when the job starts, taking the ids `CUDA_VISIBLE_DEVICES` lists when that variable is set (exporting it is the supported way to restrict `"all"` on a shared host) and every GPU `nvidia-smi` reports otherwise. The wrapper takes an exclusive `flock` on one lock file per slot under `.snakemake/gpu_slots/` (relative to the invocation directory, i.e. the repo root), substitutes the acquired id into the command's `@GPU_ID@` token, and holds the lock for the container's whole lifetime. The kernel drops a `flock` when the holding process exits for any reason, so a crashed or cancelled job frees its slot with no stale-lock cleanup. Each wrapped job logs `[gpu_slots] acquired GPU <id>`, and a solver job that finds every slot taken logs one `[gpu_slots] waiting for a free GPU slot` line before it blocks, because a rule's `2>&1 | tee {log}` pipe covers the wrapper as well as the container.
 
-**Enforcement boundary.** Every pipeline job is wrapped, the single-job Stages 1, 2, and 5 and the Stage 3/4 `prepare` and `collect` phases included, so no pipeline container can reach a device outside the pool, and every container sees exactly one GPU regardless of mode.
+**Enforcement boundary.** GPU access is enabled for the Stage 1, 2, and 5 solvers and the Stage 3/4 `run_one` jobs. Stage 3/4 `prepare` and `collect`, radius relabelling, and Stage 5 post-processing reuse the selected images without GPU flags or slot allocation.
 
-**Concurrency.** Job concurrency is still `snakemake --cores`, one job per surface (see [Per-surface fan-out](#per-surface-fan-out-stages-3-and-4)). The pool offers pool size times `jobs_per_gpu` slots, so saturating it takes at least that many cores. Asking for more cores than slots is safe, since the surplus jobs block on the flock and log the waiting line until a slot frees up.
+**Concurrency.** Job concurrency is still `snakemake --cores`, one job per surface (see [Per-surface fan-out](#per-surface-fan-out-stages-3-and-4)). The pool offers pool size times `jobs_per_gpu` slots, so saturating it takes at least that many cores. Asking for more cores than slots is safe, since the surplus solver jobs block on the flock and log the waiting line until a slot frees up.
 
 **Sharing a device.** Raising `jobs_per_gpu` is deliberate oversubscription and requires `gpu_ids` to name GPUs (`"all"` or an id list), so several JAX containers then share one device. The per-surface workers disable JAX VRAM preallocation, but co-located jobs can still exhaust a device's memory, which makes the count something to size against how much VRAM one surface needs. Both keys are validated by `resolve_gpu_settings` (`src/utils/gpu.py`) at Snakefile parse time and again at driver startup, so an unusable pool fails before any job runs; a config still carrying the removed `device` key fails the same way, with a migration hint.
 
 **On the command line.** `--config gpu_ids=4,5,6,7 jobs_per_gpu=2` overrides the file for one invocation, and CPU mode is either `gpu_ids=null` or an empty `gpu_ids=`. Snakemake parses the CLI value itself, and the validator accepts both the `"null"` string and `None` that this produces. The [closed-loop driver](#closing-the-loop) takes the same two settings as `--gpu-ids` / `--jobs-per-gpu`.
 
-**Limitations.** Concurrent pipeline invocations share slot accounting only when they are launched from the same working copy, since the lock files live under that copy's `.snakemake/gpu_slots/`, and only when they agree on `jobs_per_gpu`. Two users running from their own copies therefore allocate independently, and under `gpu_ids: "all"` both pools resolve to every GPU of the host, so each device runs twice the jobs asked for while both runs' `[gpu_slots] acquired` lines still report one job per device. Give each user a disjoint `CUDA_VISIBLE_DEVICES` share so their pools cannot overlap. The slot allocator also needs a POSIX host, since `fcntl.flock` has no Windows implementation, so GPU mode requires WSL2 rather than Git Bash; CPU mode wraps no job and is unaffected. Runtime Apptainer support is a planned follow-up; its per-device mechanism would be the `CUDA_VISIBLE_DEVICES` environment variable, since `apptainer --nv` has no per-device flag.
+**Limitations.** Concurrent pipeline invocations share slot accounting only when they are launched from the same working copy, since the lock files live under that copy's `.snakemake/gpu_slots/`, and only when they agree on `jobs_per_gpu`. Two users running from their own copies therefore allocate independently, and under `gpu_ids: "all"` both pools resolve to every GPU of the host, so each device runs twice the jobs asked for while both runs' `[gpu_slots] acquired` lines still report one job per device. Give each user a disjoint `CUDA_VISIBLE_DEVICES` share so their pools cannot overlap. The slot allocator also needs a POSIX host, since `fcntl.flock` has no Windows implementation, so GPU mode requires WSL2 rather than Git Bash; CPU mode wraps no job and is unaffected. For HTCondor with Apptainer, the scheduler assigns GPUs to solver jobs and the workflow exposes them with `--nv`. See [Running on an HTCondor cluster](../executors/htcondor/README.md).
 
 ### Container user (rootful and rootless runtimes)
 
