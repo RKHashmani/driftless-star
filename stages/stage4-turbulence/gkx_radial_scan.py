@@ -35,6 +35,8 @@ from typing import Any
 
 import h5py
 import numpy as np
+from run_validity import begin_attempt, certify_completion, completion_status, input_fingerprint
+from run_validity import read_diagnostics_csv as _read_diagnostics_csv
 from profile_parameters import (
     CONVENTION,
     geometry_scales,
@@ -843,7 +845,7 @@ def _build_manifest(
             )
 
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "profiles_source": str(args.profiles_source).lower(),
         "neopax_result": "" if neopax_result is None else str(neopax_result.resolve()),
         "common_config": str(common_config.resolve()),
@@ -968,6 +970,7 @@ def _build_manifest(
     }
     for run_spec in runs:
         _write_runtime_toml(Path(run_spec["config_path"]), manifest, run_spec)
+        run_spec["input_fingerprint"] = input_fingerprint(manifest, run_spec)
     return manifest
 
 
@@ -1180,18 +1183,6 @@ def _summary_json_path(run_spec: dict[str, Any]) -> Path:
     return Path(f"{run_spec['output_prefix']}.summary.json")
 
 
-def _has_completed_output(run_spec: dict[str, Any]) -> bool:
-    diag_csv = _diagnostics_csv_path(run_spec)
-    if not diag_csv.exists():
-        return False
-    try:
-        columns = _read_diagnostics_csv(diag_csv)
-    except Exception:
-        return False
-    times = np.asarray(columns.get("t", []), dtype=float)
-    return bool(times.size > 0)
-
-
 def _apply_backend_env(
     env: dict[str, str],
     backend: str,
@@ -1233,7 +1224,7 @@ def _resolve_run_spec(manifest: dict[str, Any], *, index: int | None, run_name: 
 def cmd_run_one(args: argparse.Namespace) -> int:
     manifest = _load_manifest(Path(args.manifest).resolve())
     run_spec = _resolve_run_spec(manifest, index=args.index, run_name=getattr(args, "run_name", None))
-    if _has_completed_output(run_spec):
+    if completion_status(manifest, run_spec)[0]:
         diag_csv = _diagnostics_csv_path(run_spec)
         row = _read_last_row_csv(diag_csv)
         print(
@@ -1282,6 +1273,11 @@ def cmd_run_one(args: argparse.Namespace) -> int:
         cmd.append("--progress")
     else:
         cmd.append("--no-progress")
+    try:
+        attempt_token = begin_attempt(manifest, run_spec)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot start GKX worker: {exc}", file=sys.stderr)
+        return 2
     proc = subprocess.run(
         cmd,
         cwd=str(run_dir),
@@ -1309,6 +1305,11 @@ def cmd_run_one(args: argparse.Namespace) -> int:
         if not bool(getattr(args, "verbose_worker", False)) and proc.stderr:
             print(proc.stderr.rstrip(), file=sys.stderr)
         print(message, file=sys.stderr)
+        return 2
+    try:
+        certify_completion(manifest, run_spec, attempt_token)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot certify GKX output: {exc}", file=sys.stderr)
         return 2
     heat_last = float("nan")
     pflux_last = float("nan")
@@ -1379,7 +1380,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_parallel = min(max_parallel, len(gpu_ids))
 
     pending = list(range(len(runs)))
-    already_done = [idx for idx, run in enumerate(runs) if _has_completed_output(run)]
+    already_done = [idx for idx, run in enumerate(runs) if completion_status(manifest, run)[0]]
     if already_done:
         pending = [idx for idx in pending if idx not in set(already_done)]
     active: dict[Any, tuple[subprocess.Popen[str], int, dict[str, str]]] = {}
@@ -1466,18 +1467,6 @@ def _read_last_row_csv(path: Path) -> dict[str, float]:
     return out
 
 
-def _read_diagnostics_csv(path: Path) -> dict[str, np.ndarray]:
-    data = np.genfromtxt(path, delimiter=",", names=True, dtype=float)
-    if data.size == 0:
-        raise ValueError(f"No rows found in diagnostics CSV {path}")
-    if getattr(data, "shape", ()) == ():
-        data = np.asarray([data], dtype=data.dtype)
-    out: dict[str, np.ndarray] = {}
-    for name in data.dtype.names or ():
-        out[str(name)] = np.asarray(data[name], dtype=float)
-    return out
-
-
 def _time_average_columns(
     columns: dict[str, np.ndarray],
     *,
@@ -1543,6 +1532,7 @@ def _write_run_heat_flux_trace_plots(
     *,
     manifest: dict[str, Any],
     species_names: list[str],
+    statuses: list[tuple[bool, str]] | None = None,
 ) -> tuple[list[Path], list[str]]:
     try:
         import matplotlib.pyplot as plt
@@ -1554,11 +1544,9 @@ def _write_run_heat_flux_trace_plots(
     runtime_species_names = list(manifest.get("runtime_species_names", []))
     written: list[Path] = []
     skipped: list[str] = []
-    for run in manifest["runs"]:
+    for index, run in enumerate(manifest["runs"]):
         diag_csv = Path(f"{run['output_prefix']}.diagnostics.csv")
-        if not diag_csv.exists():
-            skipped.append(f"rho={float(run['rho']):.4f}: missing diagnostics CSV {diag_csv}")
-            continue
+        valid, reason = statuses[index] if statuses is not None else completion_status(manifest, run)
         try:
             columns = _read_diagnostics_csv(diag_csv)
         except Exception as exc:
@@ -1570,6 +1558,8 @@ def _write_run_heat_flux_trace_plots(
             continue
 
         fig, ax = plt.subplots(figsize=(7.0, 4.5), constrained_layout=True)
+        if not valid:
+            fig.suptitle(f"Untrusted diagnostic trace. {reason}", fontsize=9)
         total_heat = np.asarray(columns.get("heat_flux", []), dtype=float)
         if total_heat.size == times.size:
             ax.plot(times, total_heat, linewidth=2.0, label="total")
@@ -1688,6 +1678,17 @@ def _expand_axis_zero_if_needed(
 def cmd_collect(args: argparse.Namespace) -> int:
     manifest = _load_manifest(Path(args.manifest).resolve())
     runs = manifest["runs"]
+    statuses = [completion_status(manifest, run) for run in runs]
+    allow_incomplete = bool(getattr(args, "allow_incomplete", False))
+    if int(manifest.get("schema_version", 1)) >= 3 and not allow_incomplete:
+        invalid = [(run, reason) for run, (valid, reason) in zip(runs, statuses) if not valid]
+        if invalid:
+            for run, reason in invalid:
+                print(f"Cannot collect {run['output_prefix']}: {reason}", file=sys.stderr)
+            if bool(getattr(args, "plot_run_heat_traces", False)):
+                _write_run_heat_flux_trace_plots(manifest=manifest, species_names=manifest["runtime_species_names"], statuses=statuses)
+            return 2
+    collected = np.zeros(len(runs), dtype=bool)
     indices_base = [i for i, run in enumerate(runs) if str(run.get("response_label", "base")) == "base"]
     indices_perturbed = [i for i, run in enumerate(runs) if str(run.get("response_label", "base")) != "base"]
     species_meta = list(manifest.get("species_meta", []))
@@ -1725,8 +1726,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
         torflux[i] = float(run["torflux"])
         er[i] = float(run["Er"])
         diag_csv = Path(f"{run['output_prefix']}.diagnostics.csv")
-        if not diag_csv.exists():
-            print(f"missing diagnostics; zero-filling run fluxes: {diag_csv}")
+        valid, reason = statuses[i]
+        if not valid:
+            print(f"invalid diagnostics; zero-filling run fluxes: {diag_csv} ({reason})")
             heat_flux[i] = 0.0
             particle_flux[i] = 0.0
             average_window_used[i] = float(args.average_window)
@@ -1739,11 +1741,16 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 t_final_override=requested_t_final,
             )
         except Exception as exc:
+            if int(manifest.get("schema_version", 1)) >= 3 and not allow_incomplete:
+                print(f"Cannot collect {diag_csv}: {exc}", file=sys.stderr)
+                return 2
+            statuses[i] = (False, f"failed to read diagnostics ({exc})")
             print(f"failed to read diagnostics; zero-filling run fluxes: {diag_csv} ({exc})")
             heat_flux[i] = 0.0
             particle_flux[i] = 0.0
             average_window_used[i] = float(args.average_window)
             continue
+        collected[i] = True
         average_window_used[i] = float(args.average_window)
         average_t_start[i] = t_start_used
         average_t_end[i] = t_end_used
@@ -1845,6 +1852,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
         grp.create_dataset("particle_flux", data=particle_flux_species)
         meta = f.create_group("meta")
         meta.attrs["manifest"] = str(Path(args.manifest).resolve())
+        meta.attrs["incomplete_results"] = bool(not np.all(collected))
+        meta.attrs["invalid_runs_json"] = json.dumps([
+            {"output_prefix": run["output_prefix"], "reason": reason}
+            for run, (valid, reason) in zip(runs, statuses) if not valid
+        ])
         meta.attrs["electron_model"] = str(manifest["electron_model"])
         meta.attrs["neopax_result"] = str(manifest["neopax_result"])
         meta.attrs["common_config"] = str(manifest["common_config"])
@@ -1886,6 +1898,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
         meta.attrs["conversion"] = "Gamma_r = a * Gamma_rho = a * Gamma_gB * n_ref[m^-3] * vth_ref[m/s] * rho_star^2; Q_r = a * Q_rho = a * Q_gB * T_ref[eV] * n_ref[m^-3] * vth_ref[m/s] * rho_star^2"
         meta.attrs["reference_species_name"] = str(manifest.get("normalization", {}).get("reference_species_name", ""))
         meta.attrs["manifest"] = str(Path(args.manifest).resolve())
+        meta.attrs["incomplete_results"] = bool(not np.all(collected))
+        meta.attrs["invalid_runs_json"] = json.dumps([
+            {"output_prefix": run["output_prefix"], "reason": reason}
+            for run, (valid, reason) in zip(runs, statuses) if not valid
+        ])
         if perturb_keys:
             key_to_index = {key: i for i, key in enumerate(perturb_keys)}
             rho_index_to_axis = {int(rho_idx): axis for axis, rho_idx in enumerate(rho_index_sorted)}
@@ -1896,7 +1913,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             for i in indices_perturbed:
                 perturb_axis = key_to_index[(str(runs[i]["response_label"]), str(runs[i]["perturb_species"]))]
                 rho_axis = rho_index_to_axis.get(int(runs[i].get("rho_index", -1)))
-                if rho_axis is None:
+                if rho_axis is None or not collected[i]:
                     continue
                 gamma_perturbed[perturb_axis, :, rho_axis] = gamma_neopax[:, i]
                 q_perturbed[perturb_axis, :, rho_axis] = q_neopax[:, i]
@@ -1929,6 +1946,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         written, skipped = _write_run_heat_flux_trace_plots(
             manifest=manifest,
             species_names=species_names,
+            statuses=statuses,
         )
         if written:
             print(f"Wrote {len(written)} per-run heat-flux trace plot(s)")
@@ -2082,7 +2100,7 @@ def cmd_all(args: argparse.Namespace) -> int:
     )
     rc = cmd_run(run_args)
     run_failed = rc != 0
-    if run_failed and not bool(args.collect_even_if_failures):
+    if run_failed and not bool(args.allow_incomplete):
         return rc
     if run_failed:
         print(
@@ -2099,6 +2117,7 @@ def cmd_all(args: argparse.Namespace) -> int:
         t_final=args.t_max,
         plot=args.plot,
         plot_run_heat_traces=args.plot_run_heat_traces,
+        allow_incomplete=bool(args.allow_incomplete),
     )
     collect_rc = cmd_collect(collect_args)
     if run_failed and collect_rc == 0:
@@ -2238,6 +2257,8 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_collect_tuning_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--allow-incomplete", action="store_true",
+                        help="Explicitly allow incomplete diagnostic export with zero-filled missing runs.")
     parser.add_argument("--average-window", type=float, default=1.0, help="Average turbulent fluxes over the final time window")
     parser.add_argument("--plot", dest="plot", action="store_true", help="Write PNG plots of Gamma and Q versus rho.")
     parser.add_argument("--no-plot", dest="plot", action="store_false", help="Skip PNG plots.")
@@ -2299,9 +2320,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_args(p)
     p.add_argument(
         "--collect-even-if-failures",
+        dest="allow_incomplete",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Continue to the collect stage after partial run failures, zero-filling missing runs.",
+        default=False,
+        help="Alias for --allow-incomplete in the full scan.",
     )
     p.set_defaults(func=cmd_all)
 

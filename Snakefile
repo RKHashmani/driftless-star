@@ -288,11 +288,19 @@ if RERUN["stage4"]:
                 output_dir=P["stage4_dir"],
             ) + " 2>&1 | tee {log}"
 
+    def stage4_runtime_input(wildcards):
+        """Wait for preparation before resolving the generated runtime TOML."""
+        checkpoints.stage4_prepare.get()
+        return f"{P['stage4_dir']}/runs/{wildcards.surf}/input.toml"
+
     rule stage4_run_one:
         input:
             manifest = S4_MANIFEST,
+            runtime_config = stage4_runtime_input,
+            wout = S1_OUTPUT,
         output:
-            f"{P['stage4_dir']}/runs/{{surf}}/run.diagnostics.csv",
+            diagnostics = f"{P['stage4_dir']}/runs/{{surf}}/run.diagnostics.csv",
+            completion = f"{P['stage4_dir']}/runs/{{surf}}/run.completion.json",
         wildcard_constraints:
             surf = SURF_PATTERN,
         log:
@@ -306,8 +314,8 @@ if RERUN["stage4"]:
                 device=DEVICE,
             ) + " 2>&1 | tee {log}"
 
-    def stage4_surface_diagnostics(wildcards):
-        """List every per-surface diagnostics CSV named by the Stage 4 manifest.
+    def stage4_surface_results(wildcards):
+        """List every diagnostics CSV and completion marker in the Stage 4 manifest.
 
         Stage 4 manifest entries carry no run_subdir key, only the container-absolute
         run_dir, so the host-side path is rebuilt from its POSIX basename.
@@ -316,8 +324,9 @@ if RERUN["stage4"]:
         with open(manifest_path, encoding="utf-8") as fh:
             manifest = json.load(fh)
         return [
-            f"{P['stage4_dir']}/runs/{posixpath.basename(run['run_dir'])}/run.diagnostics.csv"
+            f"{P['stage4_dir']}/runs/{posixpath.basename(run['run_dir'])}/{filename}"
             for run in manifest["runs"]
+            for filename in ("run.diagnostics.csv", "run.completion.json")
         ]
 
     # Stage 4 writes the flux file on VMEC's Aminor_p while NEOPAX interpolates it onto a grid built
@@ -335,7 +344,7 @@ if RERUN["stage4"]:
     rule stage4_collect:
         input:
             manifest = S4_MANIFEST,
-            diagnostics = stage4_surface_diagnostics,
+            results = stage4_surface_results,
         output:
             S4_OUTPUT,
         log:

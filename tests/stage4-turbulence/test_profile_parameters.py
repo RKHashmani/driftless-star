@@ -424,3 +424,32 @@ def test_scaling_cli_error_explains_allowed_values(capsys):
     with pytest.raises(SystemExit):
         scan.build_parser().parse_args(["prepare", "--collisionality-scaling-factor", "-1"])
     assert "must be finite and nonnegative" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("profiles,convention_only,reused", [(False, False, True), (True, False, False), (False, True, True), (True, True, True)])
+def test_reprepare_fingerprints_numerical_changes_not_audit_choices(tmp_path, monkeypatch, profiles, convention_only, reused):
+    validity = load_stage_module("stages/stage4-turbulence/run_validity.py")
+    options = ["--collisionality-source", "profiles" if profiles else "fixed"]
+    original = prepare(tmp_path, *options)
+    runtime_bytes = [Path(run["config_path"]).read_bytes() for run in original["runs"]]
+    for run in original["runs"]:
+        token = validity.begin_attempt(original, run)
+        validity.diagnostics_path(run).write_text("t,heat_flux,particle_flux\n0,1,2\n1,2,3\n")
+        validity.certify_completion(original, run, token)
+    if convention_only:
+        monkeypatch.setattr(scan, "CONVENTION", "new documentation or pin label")
+    else:
+        options += ["--collisionality-scaling-factor", "2"]
+    updated = prepare(tmp_path, *options)
+    for index, (old, new) in enumerate(zip(original["runs"], updated["runs"], strict=True)):
+        assert (Path(new["config_path"]).read_bytes() == runtime_bytes[index]) is reused
+        assert (old["input_fingerprint"] == new["input_fingerprint"]) is reused
+        assert validity.completion_status(updated, new)[0] is reused
+
+
+@pytest.mark.parametrize("flags,enabled", [([], False), (["--allow-incomplete"], True), (["--collect-even-if-failures"], True),
+    (["--allow-incomplete", "--no-collect-even-if-failures"], False)])
+def test_incomplete_alias_has_one_parser_destination(flags, enabled):
+    args = scan.build_parser().parse_args(flags)
+    assert args.allow_incomplete is enabled
+    assert not hasattr(args, "collect_even_if_failures")
