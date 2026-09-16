@@ -83,8 +83,8 @@ def _apptainer_image_ref(image: str) -> str:
 
 CONTAINER_PYTHONPATH = "/work/stages"
 
-# Docker keeps the newer per-device slot allocator. On HTCondor, each Apptainer
-# job already receives one isolated GPU, which `--nv` exposes to the nested SIF.
+# Docker uses the per-device slot allocator. HTCondor assigns each solver job
+# one isolated GPU, which `--nv` exposes to the nested Apptainer image.
 if CONTAINER_RUNTIME == "docker":
     gpu_flag = ""
     slot_prefix = ""
@@ -102,7 +102,6 @@ if CONTAINER_RUNTIME == "docker":
         '-v "$PWD:/work" -w /work '
     )
     CONTAINER_PREFIX = f"{slot_prefix}docker run --rm --pull=missing {gpu_flag}{docker_tail}"
-    # File-rewrite helpers need neither a GPU flag nor a scheduling slot.
     CONTAINER_PREFIX_CPU = f"docker run --rm --pull=missing {docker_tail}"
 
     def container_image_location(image: str) -> str:
@@ -221,7 +220,7 @@ if RERUN["stage3"]:
             f"{P['stage3_dir']}/{RUN_NAME}.prepare.log"
         shell:
             stage3_helper.prepare_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE3_JAX_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
@@ -265,7 +264,7 @@ if RERUN["stage3"]:
             f"{P['stage3_dir']}/{RUN_NAME}.collect.log"
         shell:
             stage3_helper.collect_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE3_JAX_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
@@ -284,17 +283,25 @@ if RERUN["stage4"]:
             f"{P['stage4_dir']}/{RUN_NAME}.prepare.log"
         shell:
             stage4_helper.prepare_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE4_IMG),
                 stage_cfg=STAGE4_CFG,
                 output_dir=P["stage4_dir"],
             ) + " 2>&1 | tee {log}"
 
+    def stage4_runtime_input(wildcards):
+        """Wait for preparation before resolving the generated runtime TOML."""
+        checkpoints.stage4_prepare.get()
+        return f"{P['stage4_dir']}/runs/{wildcards.surf}/input.toml"
+
     rule stage4_run_one:
         input:
             manifest = S4_MANIFEST,
+            runtime_config = stage4_runtime_input,
+            wout = S1_OUTPUT,
         output:
-            f"{P['stage4_dir']}/runs/{{surf}}/run.diagnostics.csv",
+            diagnostics = f"{P['stage4_dir']}/runs/{{surf}}/run.diagnostics.csv",
+            completion = f"{P['stage4_dir']}/runs/{{surf}}/run.completion.json",
         wildcard_constraints:
             surf = SURF_PATTERN,
         log:
@@ -308,8 +315,8 @@ if RERUN["stage4"]:
                 device=DEVICE,
             ) + " 2>&1 | tee {log}"
 
-    def stage4_surface_diagnostics(wildcards):
-        """List every per-surface diagnostics CSV named by the Stage 4 manifest.
+    def stage4_surface_results(wildcards):
+        """List every diagnostics CSV and completion marker in the Stage 4 manifest.
 
         Stage 4 manifest entries carry no run_subdir key, only the container-absolute
         run_dir, so the host-side path is rebuilt from its POSIX basename.
@@ -318,8 +325,9 @@ if RERUN["stage4"]:
         with open(manifest_path, encoding="utf-8") as fh:
             manifest = json.load(fh)
         return [
-            f"{P['stage4_dir']}/runs/{posixpath.basename(run['run_dir'])}/run.diagnostics.csv"
+            f"{P['stage4_dir']}/runs/{posixpath.basename(run['run_dir'])}/{filename}"
             for run in manifest["runs"]
+            for filename in ("run.diagnostics.csv", "run.completion.json")
         ]
 
     # Stage 4 writes the flux file on VMEC's Aminor_p while NEOPAX interpolates it onto a grid built
@@ -337,7 +345,7 @@ if RERUN["stage4"]:
     rule stage4_collect:
         input:
             manifest = S4_MANIFEST,
-            diagnostics = stage4_surface_diagnostics,
+            results = stage4_surface_results,
         output:
             S4_OUTPUT,
         log:
@@ -346,7 +354,7 @@ if RERUN["stage4"]:
             # Grouped so the pipe captures both commands, since `a && b | tee` would bind the pipe
             # to b alone and drop the collect output from the log.
             "( " + stage4_helper.collect_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE4_IMG),
                 stage_cfg=STAGE4_CFG,
                 output_dir=P["stage4_dir"],
@@ -382,7 +390,7 @@ rule stage5_post_processing:
         profiles_feedback = S5_CONFIG_FEEDBACK,
     log:    f"{P['stage5_post_dir']}/{RUN_NAME}.log"
     shell:
-        f'{container_image_ref(STAGE5_IMG)} sh -c "'
+        f'{CONTAINER_PREFIX_CPU}{container_image_location(STAGE5_IMG)} sh -c "'
         + PRESSURE_FEEDBACK_COMMAND + ' && '
         'python stages/stage5-post-processing/write_prescribed_profiles_from_transport_h5.py '
         '{input.transport} {input.common_config} --output-toml {output.profiles_feedback} && '
