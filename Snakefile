@@ -81,8 +81,8 @@ def _apptainer_image_ref(image: str) -> str:
 
 CONTAINER_PYTHONPATH = "/work/stages"
 
-# Docker keeps the newer per-device slot allocator. On HTCondor, each Apptainer
-# job already receives one isolated GPU, which `--nv` exposes to the nested SIF.
+# Docker uses the per-device slot allocator. HTCondor assigns each solver job
+# one isolated GPU, which `--nv` exposes to the nested Apptainer image.
 if CONTAINER_RUNTIME == "docker":
     gpu_flag = ""
     slot_prefix = ""
@@ -100,7 +100,6 @@ if CONTAINER_RUNTIME == "docker":
         '-v "$PWD:/work" -w /work '
     )
     CONTAINER_PREFIX = f"{slot_prefix}docker run --rm --pull=missing {gpu_flag}{docker_tail}"
-    # File-rewrite helpers need neither a GPU flag nor a scheduling slot.
     CONTAINER_PREFIX_CPU = f"docker run --rm --pull=missing {docker_tail}"
 
     def container_image_location(image: str) -> str:
@@ -219,7 +218,7 @@ if RERUN["stage3"]:
             f"{P['stage3_dir']}/{RUN_NAME}.prepare.log"
         shell:
             stage3_helper.prepare_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE3_JAX_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
@@ -263,7 +262,7 @@ if RERUN["stage3"]:
             f"{P['stage3_dir']}/{RUN_NAME}.collect.log"
         shell:
             stage3_helper.collect_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE3_JAX_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
@@ -282,7 +281,7 @@ if RERUN["stage4"]:
             f"{P['stage4_dir']}/{RUN_NAME}.prepare.log"
         shell:
             stage4_helper.prepare_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE4_IMG),
                 stage_cfg=STAGE4_CFG,
                 output_dir=P["stage4_dir"],
@@ -353,7 +352,7 @@ if RERUN["stage4"]:
             # Grouped so the pipe captures both commands, since `a && b | tee` would bind the pipe
             # to b alone and drop the collect output from the log.
             "( " + stage4_helper.collect_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE4_IMG),
                 stage_cfg=STAGE4_CFG,
                 output_dir=P["stage4_dir"],
@@ -389,7 +388,7 @@ rule stage5_post_processing:
         profiles_feedback = S5_CONFIG_FEEDBACK,
     log:    f"{P['stage5_post_dir']}/{RUN_NAME}.log"
     shell:
-        f'{container_image_ref(STAGE5_IMG)} sh -c "'
+        f'{CONTAINER_PREFIX_CPU}{container_image_location(STAGE5_IMG)} sh -c "'
         'python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py '
         'write-input {input.transport} {input.s1_input} --output-input {output.feedback} && '
         'python stages/stage5-post-processing/write_prescribed_profiles_from_transport_h5.py '

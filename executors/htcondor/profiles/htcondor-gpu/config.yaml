@@ -35,9 +35,19 @@ default-resources:
   classad_is_resumable: true
 
 set-resources:
+  stage3_prepare:
+    request_gpus: "0"
+  stage3_collect:
+    request_gpus: "0"
+  stage4_prepare:
+    request_gpus: "0"
   stage4_run_one:
     gpus_minimum_memory: "24GB"
     request_memory: "64GB"
+  stage4_collect:
+    request_gpus: "0"
+  stage5_post_processing:
+    request_gpus: "0"
 
 set-threads:
   stage1_vmex: 4

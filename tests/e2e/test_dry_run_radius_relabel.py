@@ -82,8 +82,6 @@ def test_both_commands_are_grouped_before_the_log_pipe(tmp_path: Path) -> None:
     assert _RELABEL_SCRIPT in grouped, grouped
 
 
-# Rewriting one HDF5 dataset needs no GPU. On a gpu run the collect launch takes a slot and a device, and the relabel
-# launch that follows it must take neither, or it would queue for a slot it has no use for.
 def test_relabel_launch_takes_no_gpu_or_slot(tmp_path: Path) -> None:
     result = _dry_run(
         tmp_path,
@@ -94,10 +92,10 @@ def test_relabel_launch_takes_no_gpu_or_slot(tmp_path: Path) -> None:
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     line = _collect_shell_line(output)
-    relabel_launch = line[line.index("&& docker run"):]
-    assert "--gpus" not in relabel_launch, relabel_launch
-    assert "gpu_slots" not in relabel_launch, relabel_launch
-    assert "--gpus" in line[: line.index("&& docker run")], line  # the collect launch still gets one
+    assert "&& docker run" in line, line
+    assert "--gpus" not in line, line
+    assert "gpu_slots" not in line, line
+    assert line.count("stage-4-gkx-gpu") == 2, line
 
 
 # A mistyped convention must be caught while the DAG is being built, before any stage runs, and the message must name
