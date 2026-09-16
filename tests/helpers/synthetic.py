@@ -206,8 +206,9 @@ def write_wout(path: Path, *, omit: Sequence[str] = ()) -> Path:
     Mirrors the real VMEC layout: the shape coefficients ``rmnc``/``zmns``/``lmns`` sit on
     the ``mn_mode`` grid (indexed by ``xm``/``xn``) and the field-strength coefficients
     ``bmnc``/``bsubumnc``/``bsubvmnc`` on the denser ``mn_mode_nyq`` grid (indexed by
-    ``xm_nyq``/``xn_nyq``), which is why the two mode dimensions differ in size. A scalar
-    ``Aminor_p`` supplies the minor radius the Stage 4 reader needs.
+    ``xm_nyq``/``xn_nyq``), which is why the two mode dimensions differ in size.
+    Stage 4 normalization uses the scalar ``Aminor_p`` for the minor radius
+    and the scalar ``b0`` for the magnetic field.
 
     Parameters
     ----------
@@ -252,6 +253,8 @@ def write_wout(path: Path, *, omit: Sequence[str] = ()) -> Path:
             ds.createVariable("nfp", "i4")[...] = 1
         if "Aminor_p" not in omit:
             ds.createVariable("Aminor_p", "f8")[...] = 0.3
+        if "b0" not in omit:
+            ds.createVariable("b0", "f8")[...] = 2.5
     return path
 
 

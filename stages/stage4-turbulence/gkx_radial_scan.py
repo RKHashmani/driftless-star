@@ -35,6 +35,17 @@ from typing import Any
 
 import h5py
 import numpy as np
+from run_validity import begin_attempt, certify_completion, completion_status, input_fingerprint
+from run_validity import read_diagnostics_csv as _read_diagnostics_csv
+from profile_parameters import (
+    CONVENTION,
+    geometry_scales,
+    positive,
+    reference_beta,
+    reference_speed,
+    scaling_factor,
+    self_collision,
+)
 from common.neopax_geometry import read_neopax_minor_radius
 from common.neopax_profiles import (
     NEOPAX_DENSITY_REFERENCE_M3,
@@ -162,8 +173,10 @@ def _runtime_toml_text(manifest: dict[str, Any], run_spec: dict[str, Any]) -> st
             f"electromagnetic = {_toml_scalar(phys['electromagnetic'])}",
             f"adiabatic_electrons = {_toml_scalar(phys['adiabatic_electrons'])}",
             "adiabatic_ions = false",
+            f"use_apar = {_toml_scalar(phys.get('use_apar', False))}",
+            f"use_bpar = {_toml_scalar(phys.get('use_bpar', False))}",
             f"tau_e = {_toml_scalar(1.0 if run_spec['tau_e'] is None else run_spec['tau_e'])}",
-            f"beta = {_toml_scalar(phys['beta'])}",
+            f"beta = {_toml_scalar(run_spec.get('beta', phys['beta']))}",
             f"collisions = {_toml_scalar(phys['collisions'])}",
             f"hypercollisions = {_toml_scalar(phys['hypercollisions'])}",
             "",
@@ -583,6 +596,22 @@ def _build_manifest(
             electron_idx = idx
             break
 
+    beta_source = args.beta_source
+    nu_source = args.collisionality_source
+    scale = scaling_factor(args.collisionality_scaling_factor)
+    enabled = "profiles" in (beta_source, nu_source)
+    length, field = None, None
+    if enabled:
+        if str(template_geom.get("model", "vmec")).lower() != "vmec":
+            raise ValueError("Profile beta and collisionality require VMEC geometry")
+        length, field = geometry_scales(vmec_path, need_field=beta_source == "profiles")
+    fixed_beta = float(_coalesce(args.beta, template_phys.get("beta"), 0.0))
+    parameter_context = {
+        "beta_source": beta_source,
+        "collisionality_source": nu_source,
+        "collisionality_scaling_factor": scale,
+        "calculation_convention": CONVENTION,
+    }
     runs: list[dict[str, Any]] = []
     electron_model_value = electron_model
     if electron_model_value is None:
@@ -655,33 +684,56 @@ def _build_manifest(
         if ref_n <= 0.0 or ref_t <= 0.0:
             raise ValueError(f"Reference density/temperature must stay positive at rho index {rho_idx}")
 
+        context = f"species {ref_species.name} at rho {rho_val} (index {rho_idx})"
+        speed = None
+        raw_ref_n = float(density[ref_idx, rho_idx])
+        raw_ref_t = float(temperature[ref_idx, rho_idx])
+        if enabled:
+            positive(raw_ref_n, context + " reference density")
+            positive(raw_ref_t, context + " reference temperature")
+        if nu_source == "profiles":
+            speed = reference_speed(raw_ref_t, context)
+        beta = reference_beta(raw_ref_n, raw_ref_t, field, context) if beta_source == "profiles" else fixed_beta
         runtime_species: list[dict[str, Any]] = []
         for sp_idx, sp in enumerate(species):
             include = str(electron_model_value).lower() == "kinetic" or sp.charge > 0.0
             if not include:
                 continue
             is_electron = sp.charge < 0.0
-            runtime_species.append(
-                {
-                    "name": sp.name,
-                    "charge": float(sp.charge),
-                    "mass": float(sp.mass_mp),
-                    "density": float(density[sp_idx, rho_idx] / ref_n),
-                    "temperature": float(temperature[sp_idx, rho_idx] / ref_t),
-                    "tprim": float(
-                        args.tprim_scale
-                        * (-temperature_grad[sp_idx, rho_idx] / temperature_denominator[sp_idx, rho_idx])
-                    ),
-                    "fprim": float(
-                        args.fprim_scale * (-density_grad[sp_idx, rho_idx] / density_denominator[sp_idx, rho_idx])
-                    ),
-                    "nu": float(args.nu_electron if is_electron else args.nu_ion),
-                    "density_physical": float(density[sp_idx, rho_idx]),
-                    "temperature_physical": float(temperature[sp_idx, rho_idx]),
-                    "density_reference_physical": ref_n,
-                    "temperature_reference_physical": ref_t,
-                }
-            )
+            runtime_sp = {
+                "name": sp.name,
+                "charge": float(sp.charge),
+                "mass": float(sp.mass_mp),
+                "density": float(density[sp_idx, rho_idx] / ref_n),
+                "temperature": float(temperature[sp_idx, rho_idx] / ref_t),
+                "tprim": float(
+                    args.tprim_scale
+                    * (-temperature_grad[sp_idx, rho_idx] / temperature_denominator[sp_idx, rho_idx])
+                ),
+                "fprim": float(
+                    args.fprim_scale * (-density_grad[sp_idx, rho_idx] / density_denominator[sp_idx, rho_idx])
+                ),
+                "nu": float(args.nu_electron if is_electron else args.nu_ion),
+                "density_physical": float(density[sp_idx, rho_idx]),
+                "temperature_physical": float(temperature[sp_idx, rho_idx]),
+                "density_reference_physical": ref_n,
+                "temperature_reference_physical": ref_t,
+            }
+            runtime_sp["fixed_nu"] = runtime_sp["nu"]
+            runtime_sp["self_collision_rate_s"] = None
+            runtime_sp["coulomb_logarithm"] = None
+            if nu_source == "profiles":
+                rate, logarithm = self_collision(
+                    runtime_sp["density_physical"], runtime_sp["temperature_physical"], runtime_sp["mass"], runtime_sp["charge"],
+                    context=f"species {runtime_sp['name']} at rho {rho_val} (index {rho_idx})",
+                )
+                runtime_sp["self_collision_rate_s"] = rate
+                runtime_sp["coulomb_logarithm"] = logarithm
+                runtime_sp["nu"] = rate * length / speed * scale
+                if not math.isfinite(runtime_sp["nu"]):
+                    raise ValueError(f"species {runtime_sp['name']} at rho {rho_val} collision frequency is not finite")
+
+            runtime_species.append(runtime_sp)
 
         tau_e = None
         if electron_idx is not None:
@@ -712,6 +764,18 @@ def _build_manifest(
         geometry_file = str((run_dir / local_geom_name).resolve())
         config_path = str((run_dir / "input.toml").resolve())
         run_spec = {
+            "beta": beta,
+            "parameter_audit": {
+                **parameter_context,
+                "fixed_beta": fixed_beta,
+                "raw_reference_density": raw_ref_n,
+                "raw_reference_temperature_keV": raw_ref_t,
+                "reference_length_m": length,
+                "reference_field_T": field,
+                "reference_speed_ms": speed,
+                "mass_convention": "m_s / m_p",
+                "mass_convention_status": "inherited wrapper choice, GKX reference-mass compatibility unverified",
+            },
             "index": run_index,
             "rho_index": int(rho_idx),
             "rho": rho_val,
@@ -781,7 +845,7 @@ def _build_manifest(
             )
 
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "profiles_source": str(args.profiles_source).lower(),
         "neopax_result": "" if neopax_result is None else str(neopax_result.resolve()),
         "common_config": str(common_config.resolve()),
@@ -828,12 +892,14 @@ def _build_manifest(
             else str(_coalesce(args.state_sharding, template_time.get("state_sharding"), "none")),
         },
         "physics": {
+            "use_apar": bool(template_phys.get("use_apar", False)),
+            "use_bpar": bool(template_phys.get("use_bpar", False)),
             "electrostatic": bool(_coalesce(None, template_phys.get("electrostatic"), True)),
             "electromagnetic": bool(_coalesce(None, template_phys.get("electromagnetic"), False)),
             "adiabatic_electrons": str(electron_model_value).lower() == "adiabatic",
             "collisions": bool(_coalesce(None, template_phys.get("collisions"), True)),
             "hypercollisions": bool(_coalesce(None, template_phys.get("hypercollisions"), True)),
-            "beta": float(_coalesce(args.beta, template_phys.get("beta"), 0.0)),
+            "beta": fixed_beta,
         },
         "collisions": {
             "nu_hermite": float(_coalesce(args.nu_hermite, template_coll.get("nu_hermite"), 1.0)),
@@ -904,6 +970,7 @@ def _build_manifest(
     }
     for run_spec in runs:
         _write_runtime_toml(Path(run_spec["config_path"]), manifest, run_spec)
+        run_spec["input_fingerprint"] = input_fingerprint(manifest, run_spec)
     return manifest
 
 
@@ -935,6 +1002,16 @@ def _write_runs_csv(path: Path, manifest: dict[str, Any]) -> None:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else ["index"])
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _effective_term(manifest: dict[str, Any], run: dict[str, Any], name: str) -> float:
+    """Return the effective term weight used by pinned GKX startup."""
+    physics = manifest.get("physics", {})
+    if name == "collisions":
+        enabled = physics.get("collisions", True) and any(sp.get("nu", 0.0) != 0.0 for sp in run["runtime_species"])
+    else:
+        enabled = physics.get("electromagnetic", False) and physics.get(f"use_{name}", False)
+    return float(manifest.get("terms", {}).get(name, 0.0)) if enabled else 0.0
 
 
 def _build_normalization_audit_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -972,6 +1049,20 @@ def _build_normalization_audit_rows(manifest: dict[str, Any]) -> list[dict[str, 
                     "tprim_used": tprim,
                     "tau_e_used": math.nan if tau_e is None else float(tau_e),
                     "Er_input": float(run["Er"]),
+                    **run.get("parameter_audit", {}),
+                    "beta_configured": run.get("beta", manifest.get("physics", {}).get("beta", 0.0)),
+                    "beta_effective": (
+                        run.get("beta", manifest.get("physics", {}).get("beta", 0.0))
+                        if manifest.get("physics", {}).get("electromagnetic", False) else 0.0
+                    ),
+                    "electromagnetic": manifest.get("physics", {}).get("electromagnetic", False),
+                    "apar_term_effective": _effective_term(manifest, run, "apar"),
+                    "bpar_term_effective": _effective_term(manifest, run, "bpar"),
+                    "collisions_term_effective": _effective_term(manifest, run, "collisions"),
+                    "nu_used": sp.get("nu"),
+                    "fixed_nu": sp.get("fixed_nu"),
+                    "self_collision_rate_s": sp.get("self_collision_rate_s"),
+                    "coulomb_logarithm": sp.get("coulomb_logarithm"),
                 }
             )
     return rows
@@ -1092,18 +1183,6 @@ def _summary_json_path(run_spec: dict[str, Any]) -> Path:
     return Path(f"{run_spec['output_prefix']}.summary.json")
 
 
-def _has_completed_output(run_spec: dict[str, Any]) -> bool:
-    diag_csv = _diagnostics_csv_path(run_spec)
-    if not diag_csv.exists():
-        return False
-    try:
-        columns = _read_diagnostics_csv(diag_csv)
-    except Exception:
-        return False
-    times = np.asarray(columns.get("t", []), dtype=float)
-    return bool(times.size > 0)
-
-
 def _apply_backend_env(
     env: dict[str, str],
     backend: str,
@@ -1145,7 +1224,7 @@ def _resolve_run_spec(manifest: dict[str, Any], *, index: int | None, run_name: 
 def cmd_run_one(args: argparse.Namespace) -> int:
     manifest = _load_manifest(Path(args.manifest).resolve())
     run_spec = _resolve_run_spec(manifest, index=args.index, run_name=getattr(args, "run_name", None))
-    if _has_completed_output(run_spec):
+    if completion_status(manifest, run_spec)[0]:
         diag_csv = _diagnostics_csv_path(run_spec)
         row = _read_last_row_csv(diag_csv)
         print(
@@ -1194,6 +1273,11 @@ def cmd_run_one(args: argparse.Namespace) -> int:
         cmd.append("--progress")
     else:
         cmd.append("--no-progress")
+    try:
+        attempt_token = begin_attempt(manifest, run_spec)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot start GKX worker: {exc}", file=sys.stderr)
+        return 2
     proc = subprocess.run(
         cmd,
         cwd=str(run_dir),
@@ -1221,6 +1305,11 @@ def cmd_run_one(args: argparse.Namespace) -> int:
         if not bool(getattr(args, "verbose_worker", False)) and proc.stderr:
             print(proc.stderr.rstrip(), file=sys.stderr)
         print(message, file=sys.stderr)
+        return 2
+    try:
+        certify_completion(manifest, run_spec, attempt_token)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot certify GKX output: {exc}", file=sys.stderr)
         return 2
     heat_last = float("nan")
     pflux_last = float("nan")
@@ -1291,7 +1380,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_parallel = min(max_parallel, len(gpu_ids))
 
     pending = list(range(len(runs)))
-    already_done = [idx for idx, run in enumerate(runs) if _has_completed_output(run)]
+    already_done = [idx for idx, run in enumerate(runs) if completion_status(manifest, run)[0]]
     if already_done:
         pending = [idx for idx in pending if idx not in set(already_done)]
     active: dict[Any, tuple[subprocess.Popen[str], int, dict[str, str]]] = {}
@@ -1378,18 +1467,6 @@ def _read_last_row_csv(path: Path) -> dict[str, float]:
     return out
 
 
-def _read_diagnostics_csv(path: Path) -> dict[str, np.ndarray]:
-    data = np.genfromtxt(path, delimiter=",", names=True, dtype=float)
-    if data.size == 0:
-        raise ValueError(f"No rows found in diagnostics CSV {path}")
-    if getattr(data, "shape", ()) == ():
-        data = np.asarray([data], dtype=data.dtype)
-    out: dict[str, np.ndarray] = {}
-    for name in data.dtype.names or ():
-        out[str(name)] = np.asarray(data[name], dtype=float)
-    return out
-
-
 def _time_average_columns(
     columns: dict[str, np.ndarray],
     *,
@@ -1455,6 +1532,7 @@ def _write_run_heat_flux_trace_plots(
     *,
     manifest: dict[str, Any],
     species_names: list[str],
+    statuses: list[tuple[bool, str]] | None = None,
 ) -> tuple[list[Path], list[str]]:
     try:
         import matplotlib.pyplot as plt
@@ -1466,11 +1544,9 @@ def _write_run_heat_flux_trace_plots(
     runtime_species_names = list(manifest.get("runtime_species_names", []))
     written: list[Path] = []
     skipped: list[str] = []
-    for run in manifest["runs"]:
+    for index, run in enumerate(manifest["runs"]):
         diag_csv = Path(f"{run['output_prefix']}.diagnostics.csv")
-        if not diag_csv.exists():
-            skipped.append(f"rho={float(run['rho']):.4f}: missing diagnostics CSV {diag_csv}")
-            continue
+        valid, reason = statuses[index] if statuses is not None else completion_status(manifest, run)
         try:
             columns = _read_diagnostics_csv(diag_csv)
         except Exception as exc:
@@ -1482,6 +1558,8 @@ def _write_run_heat_flux_trace_plots(
             continue
 
         fig, ax = plt.subplots(figsize=(7.0, 4.5), constrained_layout=True)
+        if not valid:
+            fig.suptitle(f"Untrusted diagnostic trace. {reason}", fontsize=9)
         total_heat = np.asarray(columns.get("heat_flux", []), dtype=float)
         if total_heat.size == times.size:
             ax.plot(times, total_heat, linewidth=2.0, label="total")
@@ -1600,6 +1678,17 @@ def _expand_axis_zero_if_needed(
 def cmd_collect(args: argparse.Namespace) -> int:
     manifest = _load_manifest(Path(args.manifest).resolve())
     runs = manifest["runs"]
+    statuses = [completion_status(manifest, run) for run in runs]
+    allow_incomplete = bool(getattr(args, "allow_incomplete", False))
+    if int(manifest.get("schema_version", 1)) >= 3 and not allow_incomplete:
+        invalid = [(run, reason) for run, (valid, reason) in zip(runs, statuses) if not valid]
+        if invalid:
+            for run, reason in invalid:
+                print(f"Cannot collect {run['output_prefix']}: {reason}", file=sys.stderr)
+            if bool(getattr(args, "plot_run_heat_traces", False)):
+                _write_run_heat_flux_trace_plots(manifest=manifest, species_names=manifest["runtime_species_names"], statuses=statuses)
+            return 2
+    collected = np.zeros(len(runs), dtype=bool)
     indices_base = [i for i, run in enumerate(runs) if str(run.get("response_label", "base")) == "base"]
     indices_perturbed = [i for i, run in enumerate(runs) if str(run.get("response_label", "base")) != "base"]
     species_meta = list(manifest.get("species_meta", []))
@@ -1637,8 +1726,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
         torflux[i] = float(run["torflux"])
         er[i] = float(run["Er"])
         diag_csv = Path(f"{run['output_prefix']}.diagnostics.csv")
-        if not diag_csv.exists():
-            print(f"missing diagnostics; zero-filling run fluxes: {diag_csv}")
+        valid, reason = statuses[i]
+        if not valid:
+            print(f"invalid diagnostics; zero-filling run fluxes: {diag_csv} ({reason})")
             heat_flux[i] = 0.0
             particle_flux[i] = 0.0
             average_window_used[i] = float(args.average_window)
@@ -1651,11 +1741,16 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 t_final_override=requested_t_final,
             )
         except Exception as exc:
+            if int(manifest.get("schema_version", 1)) >= 3 and not allow_incomplete:
+                print(f"Cannot collect {diag_csv}: {exc}", file=sys.stderr)
+                return 2
+            statuses[i] = (False, f"failed to read diagnostics ({exc})")
             print(f"failed to read diagnostics; zero-filling run fluxes: {diag_csv} ({exc})")
             heat_flux[i] = 0.0
             particle_flux[i] = 0.0
             average_window_used[i] = float(args.average_window)
             continue
+        collected[i] = True
         average_window_used[i] = float(args.average_window)
         average_t_start[i] = t_start_used
         average_t_end[i] = t_end_used
@@ -1757,6 +1852,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
         grp.create_dataset("particle_flux", data=particle_flux_species)
         meta = f.create_group("meta")
         meta.attrs["manifest"] = str(Path(args.manifest).resolve())
+        meta.attrs["incomplete_results"] = bool(not np.all(collected))
+        meta.attrs["invalid_runs_json"] = json.dumps([
+            {"output_prefix": run["output_prefix"], "reason": reason}
+            for run, (valid, reason) in zip(runs, statuses) if not valid
+        ])
         meta.attrs["electron_model"] = str(manifest["electron_model"])
         meta.attrs["neopax_result"] = str(manifest["neopax_result"])
         meta.attrs["common_config"] = str(manifest["common_config"])
@@ -1798,6 +1898,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
         meta.attrs["conversion"] = "Gamma_r = a * Gamma_rho = a * Gamma_gB * n_ref[m^-3] * vth_ref[m/s] * rho_star^2; Q_r = a * Q_rho = a * Q_gB * T_ref[eV] * n_ref[m^-3] * vth_ref[m/s] * rho_star^2"
         meta.attrs["reference_species_name"] = str(manifest.get("normalization", {}).get("reference_species_name", ""))
         meta.attrs["manifest"] = str(Path(args.manifest).resolve())
+        meta.attrs["incomplete_results"] = bool(not np.all(collected))
+        meta.attrs["invalid_runs_json"] = json.dumps([
+            {"output_prefix": run["output_prefix"], "reason": reason}
+            for run, (valid, reason) in zip(runs, statuses) if not valid
+        ])
         if perturb_keys:
             key_to_index = {key: i for i, key in enumerate(perturb_keys)}
             rho_index_to_axis = {int(rho_idx): axis for axis, rho_idx in enumerate(rho_index_sorted)}
@@ -1808,7 +1913,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             for i in indices_perturbed:
                 perturb_axis = key_to_index[(str(runs[i]["response_label"]), str(runs[i]["perturb_species"]))]
                 rho_axis = rho_index_to_axis.get(int(runs[i].get("rho_index", -1)))
-                if rho_axis is None:
+                if rho_axis is None or not collected[i]:
                     continue
                 gamma_perturbed[perturb_axis, :, rho_axis] = gamma_neopax[:, i]
                 q_perturbed[perturb_axis, :, rho_axis] = q_neopax[:, i]
@@ -1841,6 +1946,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         written, skipped = _write_run_heat_flux_trace_plots(
             manifest=manifest,
             species_names=species_names,
+            statuses=statuses,
         )
         if written:
             print(f"Wrote {len(written)} per-run heat-flux trace plot(s)")
@@ -1955,6 +2061,9 @@ def cmd_all(args: argparse.Namespace) -> int:
         alpha=args.alpha,
         npol=args.npol,
         beta=args.beta,
+        beta_source=args.beta_source,
+        collisionality_source=args.collisionality_source,
+        collisionality_scaling_factor=args.collisionality_scaling_factor,
         nu_hermite=args.nu_hermite,
         nu_laguerre=args.nu_laguerre,
         nu_hyper=args.nu_hyper,
@@ -1991,7 +2100,7 @@ def cmd_all(args: argparse.Namespace) -> int:
     )
     rc = cmd_run(run_args)
     run_failed = rc != 0
-    if run_failed and not bool(args.collect_even_if_failures):
+    if run_failed and not bool(args.allow_incomplete):
         return rc
     if run_failed:
         print(
@@ -2008,6 +2117,7 @@ def cmd_all(args: argparse.Namespace) -> int:
         t_final=args.t_max,
         plot=args.plot,
         plot_run_heat_traces=args.plot_run_heat_traces,
+        allow_incomplete=bool(args.allow_incomplete),
     )
     collect_rc = cmd_collect(collect_args)
     if run_failed and collect_rc == 0:
@@ -2032,6 +2142,13 @@ def _add_common_io_args(parser: argparse.ArgumentParser) -> None:
         default=str(DEFAULT_GKX_TEMPLATE),
         help="Base GKX runtime TOML used as the model template",
     )
+
+
+def _parse_scaling_factor(value: str) -> float:
+    try:
+        return scaling_factor(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
@@ -2086,6 +2203,9 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--init-amp", type=float, default=None)
     parser.add_argument("--alpha", type=float, default=None, help="Field-line label alpha for the local geometry")
     parser.add_argument("--npol", type=float, default=None)
+    parser.add_argument("--beta-source", choices=["fixed", "profiles"], default="fixed")
+    parser.add_argument("--collisionality-source", choices=["fixed", "profiles"], default="fixed")
+    parser.add_argument("--collisionality-scaling-factor", type=_parse_scaling_factor, default=1.0)
     parser.add_argument("--beta", type=float, default=None)
     parser.add_argument("--nu-hermite", type=float, default=None)
     parser.add_argument("--nu-laguerre", type=float, default=None)
@@ -2137,6 +2257,8 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_collect_tuning_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--allow-incomplete", action="store_true",
+                        help="Explicitly allow incomplete diagnostic export with zero-filled missing runs.")
     parser.add_argument("--average-window", type=float, default=1.0, help="Average turbulent fluxes over the final time window")
     parser.add_argument("--plot", dest="plot", action="store_true", help="Write PNG plots of Gamma and Q versus rho.")
     parser.add_argument("--no-plot", dest="plot", action="store_false", help="Skip PNG plots.")
@@ -2198,9 +2320,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_args(p)
     p.add_argument(
         "--collect-even-if-failures",
+        dest="allow_incomplete",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Continue to the collect stage after partial run failures, zero-filling missing runs.",
+        default=False,
+        help="Alias for --allow-incomplete in the full scan.",
     )
     p.set_defaults(func=cmd_all)
 

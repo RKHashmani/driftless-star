@@ -17,6 +17,9 @@ RELABEL_CONVENTIONS: tuple[str, ...] = ("boozer_volume",)
 # (config_key, cli_flag) accepted by the `prepare` subcommand; emitted as `<flag> <value>` when set.
 # The config key t_max is spelled --t-final, an accepted alias whose argparse dest is t_max.
 _PREPARE_OPTIONAL_FLAGS: list[tuple[str, str]] = [
+    ("beta_source", "--beta-source"),
+    ("collisionality_source", "--collisionality-source"),
+    ("collisionality_scaling_factor", "--collisionality-scaling-factor"),
     ("profiles_source",             "--profiles-source"),
     ("neopax_result",               "--neopax-result"),
     ("nx",                          "--nx"),

@@ -85,6 +85,16 @@ stage3:
 # Surface-level concurrency is controlled by `snakemake --cores`.
 stage4:
   gkx:
+    # Parameter sources
+    # "fixed": uses beta from the CLI or template and fixed species collision frequencies.
+    # "profiles": calculates the parameter from NEOPAX density and temperature profiles and VMEC geometry.
+    # With beta_source: profiles, enable electromagnetic physics and the desired fields
+    # in the GKX template to use the calculated beta.
+    beta_source: fixed
+    collisionality_source: fixed
+    # Multiply profile collision frequencies by this nonnegative value.
+    # Zero disables collisions.
+    collisionality_scaling_factor: 1.0
     # --- Profile source ---
     # Options include:
     # "analytical": built from the analytical parameters in common_input.toml [profiles],
