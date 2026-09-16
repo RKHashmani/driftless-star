@@ -1,34 +1,27 @@
-"""Fit or write a VMEC-style pressure power series from NEOPAX transport HDF5 output.
+"""Export NEOPAX face pressure to VMEX in pascals.
 
-This script reads ``transport_solution.h5``, extracts a time slice, sums the
-species pressure profiles on its **face** grid into a total pressure profile
-``P(rho)``, converts to ``s = rho**2``, and fits
-
-    P(s) ~= sum_k AM[k] * s**k
-
-which matches the VMEC / vmex ``PMASS_TYPE = "power_series"`` convention
-when ``PRES_SCALE = 1``.
-
-Modes
------
-- ``fit``:
-  print the fitted ``AM`` coefficients
-- ``write-input``:
-  update the ``AM`` / ``PRES_SCALE`` / ``PMASS_TYPE`` assignments inside the
-  ``&INDATA`` block of a VMEC ``input.*`` file
+``write-input`` fits a polynomial in ``s = rho_face**2`` by default.
+Select Akima or cubic splines to interpolate through every face sample.
+``fit`` prints polynomial coefficients in pascals. The shared pressure loader
+keeps NEOPAX units for convergence and comparison functions.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 
 import h5py
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+NEOPAX_PRESSURE_TO_PA = 16021.76634
+PROFILE_TYPES = ("akima_spline", "cubic_spline", "power_series")
+MAX_SPLINE_KNOTS = 101
+ENDPOINT_ATOL = 1e-12
 
 # Face-grid datasets of a NEOPAX transport_solution.h5 this fit reads, named per stage because Phase 1 keeps
 # the stage scripts free of cross-stage imports. ``rho_face`` is always required; the pressure comes from
@@ -63,10 +56,11 @@ def _resolve_time_index(n_times: int, *, time_index: int, final_time: bool) -> i
 def _load_total_pressure(h5_path: Path, *, time_index: int, final_time: bool) -> tuple[np.ndarray, np.ndarray, int | None]:
     """Read one time slice of ``transport_solution.h5`` as a total pressure on its **face** grid.
 
-    NEOPAX evolves its state on the ``n_radial`` cell centers, written as ``rho`` / ``pressure`` /
-    ``temperature`` / ``density``, and those centers span neither ``rho = 0`` nor ``rho = rho_edge``. VMEC
-    evaluates the fitted power series over the whole of ``s = rho**2`` in ``[0, 1]``, so this reads the
-    ``n_radial + 1`` faces, which do span the full minor radius.
+    NEOPAX evolves its state on the ``n_radial`` cell centers. It writes these values as
+    ``rho`` / ``pressure`` / ``temperature`` / ``density``. The cell centers include neither
+    ``rho = 0`` nor ``rho = rho_edge``. VMEC evaluates pressure over ``s = rho**2`` in
+    ``[0, 1]``. Thus, this function reads the ``n_radial + 1`` faces. The export functions
+    separately check that these faces cover the full minor radius.
 
     Parameters
     ----------
@@ -82,7 +76,7 @@ def _load_total_pressure(h5_path: Path, *, time_index: int, final_time: bool) ->
     rho : numpy.ndarray
         Face radial coordinate, shape ``(n_radial + 1,)``.
     total_pressure : numpy.ndarray
-        Species-summed face pressure, shape ``(n_radial + 1,)``.
+        Species-summed face pressure in NEOPAX units, shape ``(n_radial + 1,)``.
     resolved_index : int or None
         The time index actually read, or ``None`` for a static profile with no time axis.
 
@@ -137,7 +131,20 @@ def _load_total_pressure(h5_path: Path, *, time_index: int, final_time: bool) ->
         raise ValueError(
             f"Pressure/rho_face shape mismatch: total_pressure.shape={total_pressure.shape}, rho_face.shape={rho.shape}"
         )
+    # The loader rejects non-finite values when it reads the profile.
+    for name, arr in (("rho", rho), ("total pressure", total_pressure)):
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(f"{h5_path} {name} holds non-finite values in the selected time slice")
     return rho, total_pressure, resolved_index
+
+
+def _pressure_in_pascals(pressure: np.ndarray) -> np.ndarray:
+    """Convert NEOPAX pressure to pascals once. Reject overflow before export."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        pressure_pa = pressure * NEOPAX_PRESSURE_TO_PA
+    if not np.all(np.isfinite(pressure_pa)):
+        raise ValueError("Pressure in pascals must be finite")
+    return pressure_pa
 
 
 def _fit_power_series(s: np.ndarray, p: np.ndarray, degree: int) -> np.ndarray:
@@ -149,59 +156,97 @@ def _format_am_line(coeffs: np.ndarray) -> str:
     return "AM = " + ", ".join(f"{float(c):.16E}" for c in np.asarray(coeffs, dtype=float))
 
 
-def _rewrite_indata_scalar_line(block_text: str, key: str, value_text: str) -> str:
-    pattern = re.compile(rf"^(?P<indent>\s*){re.escape(key)}\s*=.*$", flags=re.IGNORECASE | re.MULTILINE)
-    replacement_done = False
+def _validate_export_profile(rho: np.ndarray, pressure: np.ndarray, *, spline: bool) -> np.ndarray:
+    """Check coverage of the full radius. Correct only endpoint roundoff."""
+    rho = np.asarray(rho, dtype=float).copy()
+    pressure = np.asarray(pressure, dtype=float)
+    if rho.ndim != 1 or rho.size < 2 or pressure.shape != rho.shape:
+        raise ValueError("Pressure export requires matching 1-D arrays with at least two radii")
+    if not np.all(np.isfinite(rho)) or not np.all(np.diff(rho) > 0):
+        raise ValueError("Pressure radii must be finite and strictly increasing")
+    if abs(rho[0]) > ENDPOINT_ATOL or abs(rho[-1] - 1.0) > ENDPOINT_ATOL:
+        raise ValueError("Pressure export requires rho_face spanning [0, 1]. Do not extrapolate a truncated grid")
+    rho[0], rho[-1] = 0.0, 1.0
+    if not np.all(np.diff(rho) > 0):
+        raise ValueError("Pressure radii must remain strictly increasing after endpoint roundoff correction")
+    if not np.all(np.isfinite(pressure)) or np.any(pressure < 0):
+        raise ValueError("Pressure export requires finite, non-negative pressure")
+    if spline and rho.size > MAX_SPLINE_KNOTS:
+        raise ValueError(f"VMEX accepts at most {MAX_SPLINE_KNOTS} spline knots, got {rho.size}")
+    return rho
 
-    def _replace(match: re.Match[str]) -> str:
-        nonlocal replacement_done
-        replacement_done = True
-        indent = match.group("indent")
-        return f"{indent}{value_text}"
 
-    updated = pattern.sub(_replace, block_text, count=1)
-    if replacement_done:
-        return updated
+# Mask quoted strings and comments before reading namelist syntax. A slash or
+# assignment in a title or comment must not mark the end of the INDATA block.
+_NAMELIST_LITERAL = re.compile(r"'(?:(?:'')|[^'])*'|\"(?:(?:\"\")|[^\"])*\"|![^\n]*")
+_ASSIGNMENT = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*=")
+_PRESSURE_KEYS = {"PMASS_TYPE", "PRES_SCALE", "AM", "AM_AUX_S", "AM_AUX_F"}
 
-    lines = block_text.splitlines()
-    insert_at = len(lines)
-    for i, line in enumerate(lines):
-        if line.strip() == "/":
-            insert_at = i
-            break
-    lines.insert(insert_at, f"  {value_text}")
-    return "\n".join(lines)
+
+def _rewrite_pressure(text: str, assignments: list[str]) -> str:
+    """Replace complete pressure assignments, including indexed and continued arrays."""
+    masked = _NAMELIST_LITERAL.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
+    start = re.search(r"&\s*INDATA\b", masked, re.IGNORECASE)
+    if start is None:
+        raise ValueError("Input does not contain an &INDATA block")
+    end = re.search(r"/|&end\b", masked[start.end():], re.IGNORECASE)
+    if end is None:
+        raise ValueError("Input does not contain a terminating '/' for &INDATA")
+    body_end = start.end() + end.start()
+    matches = list(_ASSIGNMENT.finditer(masked, start.end(), body_end))
+    body = text[start.end():body_end]
+    remove = np.zeros(len(body), dtype=bool)
+    for i, match in enumerate(matches):
+        if match.group(1).upper() not in _PRESSURE_KEYS:
+            continue
+        stop = matches[i + 1].start() if i + 1 < len(matches) else body_end
+        stop = match.start() + len(text[match.start():stop].rstrip())
+        remove[match.start() - start.end():stop - start.end()] = True
+    # Keep comments, including those between continuation lines. Leave all
+    # unrelated assignments, blank lines, and namelist blocks as supplied.
+    for literal in _NAMELIST_LITERAL.finditer(body):
+        if literal.group().startswith("!"):
+            remove[literal.start():literal.end()] = False
+    lines = []
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        deleted = remove[offset:offset + len(line)]
+        kept = "".join(char for char, drop in zip(line, deleted) if not drop or char == "\n")
+        if kept.strip() or not np.any(deleted):
+            lines.append(kept)
+        offset += len(line)
+    body = "".join(lines)
+    if not body.endswith("\n"):
+        body += "\n"
+    return text[:start.end()] + body + "".join("  " + line + "\n" for line in assignments) + text[body_end:]
 
 
 def _write_vmec_input_with_pressure_fit(
-    vmec_input: Path,
-    coeffs: np.ndarray,
-    *,
-    output_path: Path | None,
+    vmec_input: Path, coeffs: np.ndarray, *, output_path: Path | None,
 ) -> Path:
-    text = vmec_input.read_text()
-    m_start = re.search(r"&\s*INDATA\b", text, flags=re.IGNORECASE)
-    if not m_start:
-        raise ValueError(f"{vmec_input} does not contain an &INDATA block")
-    m_end = re.search(r"^\s*/\s*$", text[m_start.end():], flags=re.MULTILINE)
-    if not m_end:
-        raise ValueError(f"{vmec_input} does not contain a terminating '/' for &INDATA")
-
-    block_start = m_start.start()
-    body_start = m_start.end()
-    body_end = body_start + m_end.start()
-    block_end = body_start + m_end.end()
-
-    prefix = text[:body_start]
-    block_body = text[body_start:block_end]
-    suffix = text[block_end:]
-
-    block_body = _rewrite_indata_scalar_line(block_body, "PMASS_TYPE", "PMASS_TYPE = 'power_series'")
-    block_body = _rewrite_indata_scalar_line(block_body, "PRES_SCALE", "PRES_SCALE = 1.0000000000000000E+00")
-    block_body = _rewrite_indata_scalar_line(block_body, "AM", _format_am_line(coeffs))
-
+    """Write polynomial coefficients already in pascals."""
+    assignments = ["PMASS_TYPE = 'power_series'", "PRES_SCALE = 1.0000000000000000E+00", _format_am_line(coeffs)]
     dst = output_path if output_path is not None else vmec_input
-    dst.write_text(prefix + block_body + suffix)
+    dst.write_text(_rewrite_pressure(vmec_input.read_text(), assignments))
+    return dst
+
+
+def _write_vmec_input_with_pressure_spline(
+    vmec_input: Path, rho: np.ndarray, pressure_pa: np.ndarray, *,
+    profile_type: str = "akima_spline", output_path: Path | None = None,
+) -> Path:
+    """Write all supplied knots without fitting, resampling, or clipping pressure."""
+    if profile_type not in PROFILE_TYPES[:2]:
+        raise ValueError(f"Unsupported spline profile type {profile_type!r}")
+    rho = _validate_export_profile(rho, pressure_pa, spline=True)
+    assignments = [f"PMASS_TYPE = '{profile_type}'", "PRES_SCALE = 1.0000000000000000E+00"]
+    for key, values in (("AM_AUX_S", rho**2), ("AM_AUX_F", pressure_pa)):
+        # Short continuation lines also work with Fortran namelist readers.
+        for offset in range(0, len(values), 4):
+            prefix = f"{key} = " if offset == 0 else "  "
+            assignments.append(prefix + ", ".join(f"{float(v):.16E}" for v in values[offset:offset + 4]) + ",")
+    dst = output_path if output_path is not None else vmec_input
+    dst.write_text(_rewrite_pressure(vmec_input.read_text(), assignments))
     return dst
 
 
@@ -211,23 +256,16 @@ def _fit_from_args(args) -> tuple[np.ndarray, int | None, int]:
         time_index=int(args.time_index),
         final_time=bool(args.final_time),
     )
+    rho = _validate_export_profile(rho, total_pressure, spline=False)
+    total_pressure = _pressure_in_pascals(total_pressure)
     s = rho**2
 
-    # Drop the first point only when the grid actually starts on the magnetic axis. On a grid that does not
-    # start at rho = 0 the first point is a real innermost sample.
     if args.drop_axis and s.size > 1:
-        if np.isclose(rho[0], 0.0):
-            s = s[1:]
-            total_pressure = total_pressure[1:]
-        else:
-            logger.warning(
-                "--drop-axis was requested but the first radius is rho = %.6g, not the magnetic axis; "
-                "keeping it, because dropping it would discard a real innermost data point.",
-                float(rho[0]),
-            )
+        s = s[1:]
+        total_pressure = total_pressure[1:]
 
     # A degree-d power series has d+1 coefficients and needs at least d+1 sample
-    # points to be well-posed. Clamp the effective degree to the number of points 
+    # points to be well-posed. Clamp the effective degree to the number of points
     # minus one so the fit stays well-conditioned regardless of the radial resolution.
     effective_degree = min(int(args.degree), s.size - 1)
     coeffs = _fit_power_series(s, total_pressure, degree=effective_degree)
@@ -237,11 +275,11 @@ def _fit_from_args(args) -> tuple[np.ndarray, int | None, int]:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=False)
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
     def _add_common(subparser):
         subparser.add_argument("h5_path", type=Path, help="Path to transport_solution.h5")
-        subparser.add_argument("--degree", type=int, default=8, help="Polynomial degree for AM coefficients")
+        subparser.add_argument("--degree", type=int, default=None, help="Polynomial degree for AM coefficients")
         subparser.add_argument("--time-index", type=int, default=-1, help="Time slice to read if the file is time-dependent")
         subparser.add_argument(
             "--final-time",
@@ -251,8 +289,7 @@ def main() -> None:
         subparser.add_argument(
             "--drop-axis",
             action="store_true",
-            help="Exclude the magnetic axis point from the fit if rho_face[0] = 0 is causing trouble. "
-                 "Skipped with a warning if the first radius is not the axis.",
+            help="Exclude the magnetic axis point from the polynomial fit.",
         )
 
     fit_parser = subparsers.add_parser("fit", help="Print fitted VMEC AM coefficients from transport_solution.h5")
@@ -260,9 +297,10 @@ def main() -> None:
 
     write_parser = subparsers.add_parser(
         "write-input",
-        help="Fit AM coefficients from transport_solution.h5 and write them into a VMEC input file",
+        help="Export pressure from transport_solution.h5 into a VMEC input file",
     )
     _add_common(write_parser)
+    write_parser.add_argument("--profile-type", choices=PROFILE_TYPES, default="power_series")
     write_parser.add_argument("vmec_input", type=Path, help="Path to VMEC input.* file to update")
     write_parser.add_argument(
         "--output-input",
@@ -272,30 +310,34 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    if args.command is None:
-        args.command = "fit"
-
-    coeffs, resolved_index, effective_degree = _fit_from_args(args)
-
-    if args.command == "write-input":
-        out_path = _write_vmec_input_with_pressure_fit(
-            args.vmec_input,
-            coeffs,
-            output_path=args.output_input,
-        )
-        print(f"# wrote_vmec_input: {out_path}")
-
-    print(f"# input: {args.h5_path}")
-    print(f"# requested_degree: {int(args.degree)}")
-    print(f"# effective_degree: {effective_degree}")
-    if resolved_index is not None:
-        print(f"# resolved_time_index: {resolved_index}")
+    profile_type = args.profile_type if args.command == "write-input" else "power_series"
+    if profile_type != "power_series" and (args.degree is not None or args.drop_axis):
+        parser.error("--degree and --drop-axis require --profile-type power_series")
+    if profile_type == "power_series":
+        args.degree = 8 if args.degree is None else args.degree
+        if args.degree < 0:
+            parser.error("--degree must be non-negative")
+        coeffs, resolved_index, effective_degree = _fit_from_args(args)
+        if args.command == "write-input":
+            out_path = _write_vmec_input_with_pressure_fit(args.vmec_input, coeffs, output_path=args.output_input)
+        print(f"# requested_degree: {args.degree}")
+        print(f"# effective_degree: {effective_degree}")
+        print(_format_am_line(coeffs))
     else:
-        print("# resolved_time_index: static_profile")
-    print("# VMEC / vmex power-series pressure fit")
-    print("# P(s) ~= sum_k AM[k] * s**k")
-    print("s = rho**2")
-    print(_format_am_line(coeffs))
+        rho, pressure, resolved_index = _load_total_pressure(
+            args.h5_path, time_index=args.time_index, final_time=args.final_time,
+        )
+        out_path = _write_vmec_input_with_pressure_spline(
+            args.vmec_input, rho, _pressure_in_pascals(pressure),
+            profile_type=profile_type, output_path=args.output_input,
+        )
+        print(f"# pressure_knots: {rho.size}")
+    if args.command == "write-input":
+        print(f"# wrote_vmec_input: {out_path}")
+    print(f"# input: {args.h5_path}")
+    print(f"# resolved_time_index: {resolved_index if resolved_index is not None else 'static_profile'}")
+    print(f"# pressure_profile_type: {profile_type}")
+    print("# pressure_units: Pa")
     print("PRES_SCALE = 1.0")
 
 
