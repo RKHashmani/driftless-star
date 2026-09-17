@@ -7,7 +7,7 @@ This script connects NEOPAX profile definitions and outputs to DKX. It:
    from the NEOPAX TOML, or prescribed profile arrays from that TOML,
 2. extracts one saved time slice, defaulting to the final one, when using
    ``transport_h5`` profiles,
-3. builds one local dkx run per selected radial point,
+3. builds a baseline run and optional gradient-response siblings at each selected radius,
 4. launches those runs in parallel on CPUs or pinned GPUs,
 5. collects particle flux, heat flux, and parallel-flow diagnostics,
 6. writes an HDF5 profile file with datasets ``r``, ``Gamma``, ``Q``, and
@@ -31,11 +31,13 @@ It applies the existing conversions to NEOPAX units.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 from importlib.metadata import distribution
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -188,8 +190,6 @@ def _format_value(value: Any) -> str:
 
 
 def _patch_group_value(*, text: str, group: str, key: str, value: Any) -> str:
-    import re
-
     start = re.search(rf"(?im)^\s*&{re.escape(group)}\s*$", text)
     if start is None:
         raise ValueError(f"Missing namelist group &{group}")
@@ -212,8 +212,6 @@ def _patch_group_value(*, text: str, group: str, key: str, value: Any) -> str:
 
 
 def _drop_group_key(*, text: str, group: str, key: str) -> str:
-    import re
-
     start = re.search(rf"(?im)^\s*&{re.escape(group)}\s*$", text)
     if start is None:
         raise ValueError(f"Missing namelist group &{group}")
@@ -238,6 +236,139 @@ def _drop_group_key(*, text: str, group: str, key: str) -> str:
             stop = assignments[index + 1].start() if index + 1 < len(assignments) else len(group_txt)
             group_txt2 = group_txt2[:assignment.start()] + group_txt2[stop:]
     return text[: start.end()] + group_txt2 + text[end_pos:]
+
+
+FD_CHANNELS = {"density_gradient": "fd_n", "temperature_gradient": "fd_t"}
+
+
+def _response_settings(args: argparse.Namespace, species: list[SpeciesMeta]) -> dict[str, Any]:
+    """Validate response controls and resolve species selections.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed response mode, species selections, and step controls.
+    species : list[SpeciesMeta]
+        Species names from the common input, in solver order.
+
+    Returns
+    -------
+    dict[str, Any]
+        Response settings with canonical species names, or empty selections
+        when response mode is disabled.
+
+    Raises
+    ------
+    ValueError
+        An enabled response has invalid steps or species selections.
+    """
+    settings = {
+        "response_mode": args.response_mode,
+        "perturb_density_species": [],
+        "perturb_temperature_species": [],
+        "dkap_density": args.dkap_density,
+        "dkap_temperature": args.dkap_temperature,
+        "perturb_rel_step": args.perturb_rel_step,
+    }
+    if args.response_mode == "none":
+        return settings
+    names = {sp.name.lower(): sp.name for sp in species}
+    if len(names) != len(species):
+        raise ValueError("Species names must be unique ignoring case.")
+    for key in ("dkap_density", "dkap_temperature", "perturb_rel_step"):
+        value = settings[key]
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(f"{key} must be finite and nonnegative.")
+    for key in ("perturb_density_species", "perturb_temperature_species"):
+        for token in getattr(args, key).split(","):
+            token = token.strip()
+            if not token:
+                continue
+            name = names.get(token.lower())
+            if name is None:
+                raise ValueError(f"Unknown {key} species {token!r}.")
+            if re.fullmatch(r"\w+", name) is None:
+                raise ValueError(f"Species {name!r} cannot name a response run directory.")
+            if name not in settings[key]:
+                settings[key].append(name)
+    if not (settings["perturb_density_species"] or settings["perturb_temperature_species"]):
+        raise ValueError("fd_gradients requires at least one perturbation species.")
+    return settings
+
+
+def _response_states(
+    *,
+    snapshot: FaceState,
+    species: list[SpeciesMeta],
+    radius_indices: list[int],
+    settings: dict[str, Any],
+) -> list[tuple[int, FaceState, dict[str, Any]]]:
+    """Prepare all states with kappa = -d(log profile)/d(rho).
+
+    Density steps change kappa_n by delta and kappa_T by -delta to preserve
+    the pressure gradient. Temperature steps change only kappa_T.
+
+    Parameters
+    ----------
+    snapshot : FaceState
+        Baseline profiles and gradients on the radial faces.
+    species : list[SpeciesMeta]
+        Species metadata in the same order as the profile arrays.
+    radius_indices : list[int]
+        Face indices selected for the scan.
+    settings : dict[str, Any]
+        Validated settings from ``_response_settings``.
+
+    Returns
+    -------
+    list[tuple[int, FaceState, dict[str, Any]]]
+        Radius index, profile state, and response metadata for each run.
+
+    Raises
+    ------
+    ValueError
+        A selected profile is invalid or its effective step is zero or nonfinite.
+    """
+    species_names = [sp.name for sp in species]
+    pairs = [
+        (channel, species_names.index(name))
+        for channel, selection in (
+            ("density_gradient", "perturb_density_species"),
+            ("temperature_gradient", "perturb_temperature_species"),
+        )
+        for name in settings[selection]
+    ]
+    states = []
+    for radius_index in radius_indices:
+        states.append((radius_index, snapshot, {
+            "response_label": "base", "perturb_species": "none", "perturb_delta": 0.0,
+        }))
+        for channel, si in pairs:
+            name = species[si].name
+            location = f"species {name!r} at rho={snapshot.rho[radius_index]} (index {radius_index})"
+            n, t = snapshot.density[si, radius_index], snapshot.temperature[si, radius_index]
+            dn, dt = snapshot.density_grad[si, radius_index], snapshot.temperature_grad[si, radius_index]
+            if not np.all(np.isfinite([n, t, dn, dt])) or n <= 0 or t <= 0:
+                raise ValueError(
+                    f"Gradient response for {location} requires finite gradients "
+                    "and positive local density and temperature."
+                )
+            density_grad = snapshot.density_grad.copy()
+            temperature_grad = snapshot.temperature_grad.copy()
+            if channel == "density_gradient":
+                delta = -max(settings["dkap_density"], settings["perturb_rel_step"] * abs(dn / n))
+                density_grad[si, radius_index] -= n * delta
+                temperature_grad[si, radius_index] += t * delta
+            else:
+                delta = max(settings["dkap_temperature"], settings["perturb_rel_step"] * abs(dt / t))
+                temperature_grad[si, radius_index] -= t * delta
+            if not np.isfinite(delta) or delta == 0:
+                raise ValueError(f"Gradient response for {location} must have a finite nonzero step.")
+            state = replace(snapshot, density_grad=density_grad, temperature_grad=temperature_grad)
+            states.append((radius_index, state, {
+                "response_label": channel, "perturb_species": name, "perturb_delta": delta,
+            }))
+    return states
 
 
 def _prepare_input_text(
@@ -867,6 +998,7 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
     config_path = Path(args.common_config).resolve()
     cfg = _load_toml(config_path)
     species = _parse_species_from_config(cfg)
+    response_settings = _response_settings(args, species)
     wout_path = _infer_wout_path(config_path, cfg, args.wout_path)
     booz_path = _infer_booz_path(config_path, cfg, args.boozer_path)
     profiles_source = str(args.profiles_source).lower()
@@ -939,16 +1071,21 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
 
     pending_task_payloads: list[Path] = []
     manifest_runs: list[dict[str, Any]] = []
-    for position, radius_index in enumerate(radius_indices):
+    response_runs = _response_states(
+        snapshot=snapshot, species=species, radius_indices=radius_indices, settings=response_settings,
+    )
+    for radius_index, state, response in response_runs:
         rho_value = float(snapshot.rho[radius_index])
         run_name = f"rho_{radius_index:03d}_r{rho_value:.4f}".replace(".", "p")
+        if response["response_label"] != "base":
+            run_name += f"_{FD_CHANNELS[response['response_label']]}_{response['perturb_species']}"
         surface_dir = run_dir / run_name
         surface_dir.mkdir(parents=True, exist_ok=True)
 
         input_text = _prepare_input_text(
             template_text=template_text,
             species=species,
-            snapshot=snapshot,
+            snapshot=state,
             radius_index=radius_index,
             include_phi1=args.include_phi1,
             resolution_overrides=resolution_overrides,
@@ -973,7 +1110,7 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
             "wout_path": None if wout_path is None else str(wout_path),
             "n_species": len(species),
             "verbose": bool(args.verbose_workers),
-            "benchmark_repeats": int(args.benchmark_repeats),
+            "benchmark_repeats": int(args.benchmark_repeats) if response["response_label"] == "base" else 0,
             "benchmark_warmup": int(args.benchmark_warmup),
         }
         can_reuse = (
@@ -981,7 +1118,7 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
             and _existing_result_is_usable(
                 result_json,
                 expected=payload,
-                require_benchmark=bool(int(args.benchmark_repeats) > 0),
+                require_benchmark=payload["benchmark_repeats"] > 0,
             )
         )
         input_path.write_text(input_text, encoding="utf-8")
@@ -993,7 +1130,8 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
             pending_task_payloads.append(payload_path)
         manifest_runs.append(
             {
-                "index": position,
+                **response,
+                "index": len(manifest_runs),
                 "radius_index": int(radius_index),
                 "rho": rho_value,
                 "run_subdir": run_name,
@@ -1004,6 +1142,7 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
 
     manifest = {
         "schema_version": 1,
+        **response_settings,
         "solver": solver,
         "wout_sha256": wout_sha256,
         "profiles_source": str(args.profiles_source),
@@ -1028,6 +1167,66 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
         json.dump(manifest, fh, indent=2, sort_keys=True)
 
     return manifest, pending_task_payloads
+
+
+def _collect_responses(
+    manifest: dict[str, Any],
+    responses: dict[tuple[int, str, str], dict[str, Any]],
+    baseline_runs: list[dict[str, Any]],
+    n_species: int,
+    axis_padded: bool,
+) -> dict[str, Any]:
+    """Collect sibling fluxes and prepared increments in configured pair order.
+
+    Parameters
+    ----------
+    manifest : dict[str, Any]
+        Prepared run list and response settings.
+    responses : dict[tuple[int, str, str], dict[str, Any]]
+        Perturbed results and signed steps keyed by radius index, channel, and input species.
+    baseline_runs : list[dict[str, Any]]
+        Baseline manifest entries sorted by radius.
+    n_species : int
+        Number of output species.
+    axis_padded : bool
+        Whether the aggregate starts with a synthetic zero-flux axis.
+
+    Returns
+    -------
+    dict[str, Any]
+        Response datasets, or an empty mapping for a baseline scan.
+
+    Raises
+    ------
+    KeyError
+        A configured response is missing from the prepared results.
+    """
+    pairs = []
+    if manifest["response_mode"] == "fd_gradients":
+        for channel, key in (
+            ("density_gradient", "perturb_density_species"),
+            ("temperature_gradient", "perturb_temperature_species"),
+        ):
+            pairs.extend((channel, name) for name in manifest[key])
+    if not pairs:
+        return {}
+    nr = len(baseline_runs) + int(axis_padded)
+    data = {
+        "Gamma_perturbed": np.zeros((len(pairs), n_species, nr)),
+        "Q_perturbed": np.zeros((len(pairs), n_species, nr)),
+        "perturb_delta": np.zeros((len(pairs), nr)),
+        "perturb_present": np.zeros((len(pairs), nr), dtype=bool),
+        "response_label": [pair[0] for pair in pairs],
+        "perturb_species": [pair[1] for pair in pairs],
+    }
+    for ri, run in enumerate(baseline_runs, start=int(axis_padded)):
+        for pi, (channel, name) in enumerate(pairs):
+            result = responses[(run["radius_index"], channel, name)]
+            data["Gamma_perturbed"][pi, :, ri] = result["Gamma"]
+            data["Q_perturbed"][pi, :, ri] = result["Q"]
+            data["perturb_delta"][pi, ri] = result["perturb_delta"]
+            data["perturb_present"][pi, ri] = True
+    return data
 
 
 def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
@@ -1066,6 +1265,8 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
     upar_out = []
     raw_meta = {"Gamma_key": None, "Q_key": None, "Upar_key": None}
     benchmark_rows: list[dict[str, Any]] = []
+    responses = {}
+    baseline_runs = []
     for run in sorted(manifest["runs"], key=lambda r: r["rho"]):
         result_json = run_dir / run["run_subdir"] / run["result_json"]
         if not result_json.exists():
@@ -1080,6 +1281,11 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
             "wout_sha256": manifest["wout_sha256"],
             "n_species": len(species),
         })
+        if run["response_label"] != "base":
+            identity = (run["radius_index"], run["response_label"], run["perturb_species"])
+            responses[identity] = {**summary, "perturb_delta": run["perturb_delta"]}
+            continue
+        baseline_runs.append(run)
         rho_out.append(float(summary["rho"]))
         rhat_value = summary.get("rHat")
         if rhat_value is None:
@@ -1117,6 +1323,7 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
     if rho_arr.size < 2 or np.any(np.diff(rho_arr) <= 0) or np.any(np.diff(rhat_arr) <= 0):
         raise ValueError("DKX collection needs at least two strictly increasing radii.")
 
+    response_data = _collect_responses(manifest, responses, baseline_runs, len(species), axis_padded)
     time_value = manifest["time_value"]
     include_phi1 = manifest["include_phi1"]
     out_h5 = Path(args.output).resolve() if args.output else output_dir / "dkx_flux_profiles.h5"
@@ -1128,6 +1335,16 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
         f.create_dataset("Gamma", data=gamma_arr)
         f.create_dataset("Q", data=q_arr)
         f.create_dataset("Upar", data=upar_arr)
+        for key, values in response_data.items():
+            if key in ("response_label", "perturb_species"):
+                f.create_dataset(key, data=values, dtype=h5py.string_dtype("utf-8"))
+            else:
+                f.create_dataset(key, data=values)
+        if response_data:
+            f.attrs["response_note"] = (
+                "kappa=-d(log profile)/d(rho). Density steps preserve the pressure gradient. "
+                "Use (F_perturbed-F_base)/perturb_delta where perturb_present is true."
+            )
         f.create_dataset("species_names", data=np.asarray([sp.name.encode("utf-8") for sp in species]))
         f.attrs["profiles_source"] = str(manifest["profiles_source"])
         f.attrs["source_transport_solution"] = (
@@ -1231,7 +1448,7 @@ def cmd_main(args: argparse.Namespace) -> int:
         placement_note = f"cores_per_run={int(args.cores_per_run)}"
     print(
         "[dkx-scan] "
-        f"selected {total_runs} radii over rho in [{rho_min_val:.4f}, {rho_max_val:.4f}] "
+        f"prepared {total_runs} runs over rho in [{rho_min_val:.4f}, {rho_max_val:.4f}] "
         f"({backend_note}, {parallel_note}, {placement_note})"
     , flush=True)
     if reused_runs:
@@ -1333,6 +1550,30 @@ def _add_io_and_shaping(p: argparse.ArgumentParser) -> None:
     p.add_argument("--rho-min", type=float, default=None, help="Minimum rho to include.")
     p.add_argument("--rho-max", type=float, default=None, help="Maximum rho to include.")
     p.add_argument("--num-radii", type=int, default=None, help="Number of radii to sample inside the rho filter.")
+    p.add_argument(
+        "--response-mode", choices=("none", "fd_gradients"), default="none",
+        help="Use baseline fluxes only (none, default) or add gradient-response siblings (fd_gradients).",
+    )
+    p.add_argument(
+        "--perturb-density-species", default="",
+        help="Comma-separated density-response species. Default empty.",
+    )
+    p.add_argument(
+        "--perturb-temperature-species", default="",
+        help="Comma-separated temperature-response species. Default empty.",
+    )
+    p.add_argument(
+        "--dkap-density", type=float, default=0.5,
+        help="Minimum density-gradient step magnitude. Default 0.5.",
+    )
+    p.add_argument(
+        "--dkap-temperature", type=float, default=0.5,
+        help="Minimum temperature-gradient step magnitude. Default 0.5.",
+    )
+    p.add_argument(
+        "--perturb-rel-step", type=float, default=0.5,
+        help="Relative gradient-step factor. Default 0.5.",
+    )
     p.add_argument("--wout-path", default=None, help="Optional VMEC equilibrium override for dkx.")
     p.add_argument(
         "--boozer-path",

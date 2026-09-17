@@ -33,19 +33,27 @@ _scan = load_stage_module(_STAGE3_SCRIPT)
 # each flag individually and to prove that a fully-populated config never leaks
 # scan-level parallelism flags. max_parallel and gpu_ids are retired keys that older
 # configs may still carry; every composer must ignore them.
+# Prescribed profiles represent iteration 2 onward, after transport feedback.
 _PREPARE_OPTIONALS: list[tuple[str, str, object]] = [
-    ("profiles_source",    "--profiles-source",    "prescribed"),  # the loop's iteration-2+ value, not the default
-    ("neopax_result",      "--neopax-result",      "outputs/quick_run/stage5_transport/transport_solution.h5"),
-    ("ntheta",             "--ntheta",             5),
-    ("nzeta",              "--nzeta",              11),
-    ("nxi",                "--nxi",                12),
-    ("nx",                 "--nx",                 4),
-    ("solver_tolerance",   "--solver-tolerance",   1e-06),
-    ("analytical_n_radii", "--analytical-n-radii", 51),
-    ("rho_indices",        "--rho-indices",        "1,5,10"),
-    ("rho_min",            "--rho-min",            0.1),
-    ("rho_max",            "--rho-max",            0.9),
-    ("num_radii",          "--num-radii",          4),
+    ("profiles_source",             "--profiles-source",             "prescribed"),
+    ("neopax_result",               "--neopax-result",
+     "outputs/quick_run/stage5_transport/transport_solution.h5"),
+    ("ntheta",                      "--ntheta",                      5),
+    ("nzeta",                       "--nzeta",                       11),
+    ("nxi",                         "--nxi",                         12),
+    ("nx",                          "--nx",                          4),
+    ("solver_tolerance",            "--solver-tolerance",            1e-06),
+    ("analytical_n_radii",          "--analytical-n-radii",          51),
+    ("rho_indices",                 "--rho-indices",                 "1,5,10"),
+    ("rho_min",                     "--rho-min",                     0.1),
+    ("rho_max",                     "--rho-max",                     0.9),
+    ("num_radii",                   "--num-radii",                   4),
+    ("response_mode",               "--response-mode",               "fd_gradients"),
+    ("perturb_density_species",     "--perturb-density-species",     "D,e"),
+    ("perturb_temperature_species", "--perturb-temperature-species", "D"),
+    ("dkap_density",                "--dkap-density",                0.25),
+    ("dkap_temperature",            "--dkap-temperature",            0.75),
+    ("perturb_rel_step",            "--perturb-rel-step",            0.1),
 ]
 
 _FULL_CFG: dict = {key: value for key, _, value in _PREPARE_OPTIONALS} | {

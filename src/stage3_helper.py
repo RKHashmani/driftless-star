@@ -14,18 +14,24 @@ _SCRIPT = "stages/stage3-neoclassical/dkx_radial_scan.py"
 
 # (config_key, cli_flag) accepted by the `prepare` subcommand; emitted as `<flag> <value>` when set.
 _PREPARE_OPTIONAL_FLAGS: list[tuple[str, str]] = [
-    ("profiles_source",    "--profiles-source"),
-    ("neopax_result",      "--neopax-result"),
-    ("ntheta",             "--ntheta"),
-    ("nzeta",              "--nzeta"),
-    ("nxi",                "--nxi"),
-    ("nx",                 "--nx"),
-    ("solver_tolerance",   "--solver-tolerance"),
-    ("analytical_n_radii", "--analytical-n-radii"),
-    ("rho_indices",        "--rho-indices"),
-    ("rho_min",            "--rho-min"),
-    ("rho_max",            "--rho-max"),
-    ("num_radii",          "--num-radii"),
+    ("profiles_source",             "--profiles-source"),
+    ("neopax_result",               "--neopax-result"),
+    ("ntheta",                      "--ntheta"),
+    ("nzeta",                       "--nzeta"),
+    ("nxi",                         "--nxi"),
+    ("nx",                          "--nx"),
+    ("solver_tolerance",            "--solver-tolerance"),
+    ("analytical_n_radii",          "--analytical-n-radii"),
+    ("rho_indices",                 "--rho-indices"),
+    ("rho_min",                     "--rho-min"),
+    ("rho_max",                     "--rho-max"),
+    ("num_radii",                   "--num-radii"),
+    ("response_mode",               "--response-mode"),
+    ("perturb_density_species",     "--perturb-density-species"),
+    ("perturb_temperature_species", "--perturb-temperature-species"),
+    ("dkap_density",                "--dkap-density"),
+    ("dkap_temperature",            "--dkap-temperature"),
+    ("perturb_rel_step",            "--perturb-rel-step"),
 ]
 
 # verbose_workers is baked into each per-surface payload at prepare time.
