@@ -11,6 +11,7 @@ graph LR
     IN["Boundary coefficients<br/>+ profile guesses"] --> S1["<b>Stage 1</b><br/>Equilibrium"]
     S1 -->|"wout_*.nc"| S2["<b>Stage 2</b><br/>Boozer Transform"]
     S2 -->|"boozmn_*.nc"| S3["<b>Stage 3</b><br/>Neoclassical"]
+    S1 -->|"wout_*.nc"| S3
     S2 -->|"geometry"| S4["<b>Stage 4</b><br/>Turbulence"]
     S3 -->|"fluxes"| S5["<b>Stage 5</b><br/>Transport"]
     S4 -->|"heat/particle flux"| S5
@@ -36,7 +37,7 @@ Stages 3 and 4 run in parallel. Each stage should eventually be independently sw
 |-------|---------|-------------|--------------|
 | 1. Equilibrium | Ideal-MHD force balance | [vmex](https://github.com/uwplasma/vmex), [DESC](https://github.com/PlasmaControl/DESC) | [VMEC++](https://github.com/proximafusion/vmecpp) |
 | 2. Boozer Transform | Coordinate transform | [booz_xform_jax](https://github.com/uwplasma/booz_xform_jax) | [BOOZ_XFORM](https://github.com/hiddenSymmetries/booz_xform) |
-| 3. Neoclassical | Effective ripple, drift-kinetic | [NEO_JAX](https://github.com/uwplasma/NEO_JAX), [sfincs_jax](https://github.com/uwplasma/sfincs_jax) | [NEO](https://github.com/PrincetonUniversity/STELLOPT), [SFINCS](https://github.com/landreman/sfincs) |
+| 3. Neoclassical | Effective ripple, drift-kinetic | [NEO_JAX](https://github.com/uwplasma/NEO_JAX), [DKX](https://github.com/uwplasma/DKX) | [NEO](https://github.com/PrincetonUniversity/STELLOPT), [SFINCS](https://github.com/landreman/sfincs) |
 | 4. Turbulence | Gyrokinetic equation | [GKX](https://github.com/uwplasma/GKX) | [GX](https://bitbucket.org/gyrokinetics/gx), [GENE](https://genecode.org) |
 | 5. Transport | Profile evolution, power balance | [NEOPAX](https://github.com/uwplasma/NEOPAX) | [Trinity3D](https://bitbucket.org/gyrokinetics/t3d) |
 
@@ -67,7 +68,7 @@ Install the primary code, document the API and convergence behavior, write examp
   - [ ] `booz_xform_jax`
   - [ ] `BOOZ_XFORM`
 - [ ] Stage 3 -- Neoclassical
-  - [ ] `sfincs_jax`
+  - [ ] `DKX`
   - [ ] `NEO_JAX`
   - [ ] `NEO`
   - [ ] `SFINCS`
@@ -92,7 +93,7 @@ Containerize stages and write tests. Full checklist in the [Guide](docs/guide.md
   - [x] `BOOZ_XFORM`
 - [ ] Stage 3 -- Neoclassical
   - [x] `NEO_JAX`
-  - [x] `sfincs_jax`
+  - [x] `DKX`
   - [ ] `NEO`
   - [x] `SFINCS`
 - [ ] Stage 4 -- Turbulence
@@ -115,7 +116,7 @@ Snakemake DAG, end-to-end tests, and publishing. Details in the [Guide](docs/gui
 
 ## Usage
 
-A *run* is a folder under `inputs/` that holds its run config (`config.yaml`) and stage inputs. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. Two W7-X configurations are committed beside it: `inputs/w7-x_quick_run/` for a smoke run and `inputs/w7-x_t3d_validation/` for the Trinity3D validation resolution. Their Stage 3 SFINCS namelist, `sfincs_input.w7x_t3d_reconstruction`, remains local. Add that file to the selected run directory before you start a W7-X run. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5.
+A *run* is a folder under `inputs/` that holds its run config (`config.yaml`) and stage inputs. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. Two W7-X configurations are committed beside it: `inputs/w7-x_quick_run/` for a smoke run and `inputs/w7-x_t3d_validation/` for the Trinity3D validation resolution. Their Stage 3 SFINCS namelist for DKX, `sfincs_input.w7x_t3d_reconstruction`, remains local. Add that file to the selected run directory before you start a W7-X run. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5.
 
 `driftless-star` iterates toward transport-consistent profiles by chaining forward passes. Each pass's Stage 5 transport solution feeds the next one three ways: as a boundary refit from the evolved pressure, as kinetic profiles prescribed to Stages 3, 4, and 5, and as the advanced transport clock.
 
@@ -165,6 +166,8 @@ pixi run driftless-star --config inputs/quick_run/config.yaml --cores 8 --gpu-id
 GPU mode needs an NVIDIA host with `nvidia-container-toolkit` configured on the docker daemon. See [docs/mvp-pipeline.md](docs/mvp-pipeline.md#multi-gpu-scheduling) for how the pinning works, how to share a host with other users, and the current limitations.
 
 ### Recreate the Trinity3D + GX validation
+
+Both W7-X configurations use `stage3.dkx` and write `dkx_flux_profiles.h5`. To resume an older run whose Stage 3 artifact is named `sfincs_jax_flux_profiles.h5`, set `filenames.s3_output` to that existing filename in the run config.
 
 `inputs/w7-x_t3d_validation/` reconstructs the W7-X ion-temperature clamping case that Trinity3D runs with GX as its turbulent flux model. Frozen 6.7 keV electrons heat the evolving 1 keV ions through collisional exchange while ITG turbulence limits the resulting gradient. The transport grid has eight cells bounded by nine faces out to rho = 0.7. Stages 3 and 4 omit the magnetic axis and scan the eight non-axis faces. Iteration 1 builds every stage input from the analytical `[profiles]` parameters. Later iterations prescribe their profiles from the previous transport solution.
 

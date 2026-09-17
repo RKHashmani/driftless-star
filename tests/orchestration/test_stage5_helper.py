@@ -71,7 +71,7 @@ def _prepare(tmp_path: Path) -> tuple[Path, Path]:
         s5_resolved_config=str(resolved),
         s1_output=str(out / "stage1_equilibrium" / "wout.nc"),
         s2_output=str(out / "stage2_boozer" / "boozmn.nc"),
-        s3_output=str(out / "stage3_neoclassical" / "sfincs_flux.h5"),
+        s3_output=str(out / "stage3_neoclassical" / "dkx_flux_profiles.h5"),
         s4_output=str(out / "stage4_turbulence" / "neopax_fluxes.h5"),
         s5_output_dir=str(out / "stage5_transport"),
     )
@@ -87,7 +87,7 @@ def test_rewrites_five_paths_relative_and_quoted(tmp_path: Path) -> None:
     text = resolved.read_text()  # also asserts the parent dir was created
     assert 'vmec_file = "../stage1_equilibrium/wout.nc"' in text
     assert 'boozer_file = "../stage2_boozer/boozmn.nc"' in text
-    assert 'neoclassical_file = "../stage3_neoclassical/sfincs_flux.h5"' in text
+    assert 'neoclassical_file = "../stage3_neoclassical/dkx_flux_profiles.h5"' in text
     assert 'turbulence_file = "../stage4_turbulence/neopax_fluxes.h5"' in text
     # The output dir is the copy's own dir, so it resolves to "./" with a trailing slash.
     assert 'transport_output_dir = "./"' in text

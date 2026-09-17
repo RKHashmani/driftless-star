@@ -28,7 +28,7 @@
 
 ## Stage 3 -- Neoclassical
 
-- [ ] sfincs/sfincs_jax and NEO_JAX do not have directly compatible inputs; same adapter/translation issue as Stage 1.
+- [ ] sfincs/DKX and NEO_JAX do not have directly compatible inputs; same adapter/translation issue as Stage 1.
 - [ ] NEO_JAX is fast, but its output can't be used for future stages. sfincs is slower, but more accurate.
 - [ ] NEO_JAX is excluded from the MVP, but should be included in the final pipeline as an optional stage; its effective ripple output is valuable as a figure of merit even though it does not feed later stages
 

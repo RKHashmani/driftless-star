@@ -61,7 +61,7 @@ pixi run driftless-star-fwd \
 
 ### The W7-X runs
 
-`inputs/w7-x_quick_run/` and `inputs/w7-x_t3d_validation/` use the same HTCondor profile as `quick_run`. Their Stage 3 SFINCS namelist is not committed. Put `sfincs_input.w7x_t3d_reconstruction` in the selected staging input directory before you submit the run. Otherwise, `stage3_prepare` fails.
+`inputs/w7-x_quick_run/` and `inputs/w7-x_t3d_validation/` use the same HTCondor profile as `quick_run`. Their Stage 3 SFINCS namelist for DKX is not committed. Put `sfincs_input.w7x_t3d_reconstruction` in the selected staging input directory before you submit the run. Otherwise, `stage3_prepare` fails.
 
 Edit the selected staging `config.yaml` so that `input_dir` and `output_dir` are absolute paths. Then start the closed-loop validation run from the repository root:
 
@@ -75,7 +75,7 @@ pixi run driftless-star \
 
 Use `--gpu-ids all` for both W7-X configurations. The quick configuration already uses `all`, but the validation configuration lists local device IDs. Those IDs do not identify HTCondor execute nodes. In Apptainer mode, this option selects the GPU images and records the effective cluster configuration.
 
-The W7-X runs queue more work than `quick_run`. The W7-X quick run has 9 transport cells and 10 faces. Stages 3 and 4 scan its 9 non-axis faces. This produces 9 SFINCS jobs and 18 GKX jobs in iteration 1. The validation run has 8 cells and 9 faces. It scans 8 non-axis faces and produces 8 SFINCS jobs and 16 GKX jobs. Its 8 SFINCS jobs run in iteration 1 only, because its run config freezes Stages 1 through 3 after the first iteration. Later iterations queue Stages 4 and 5 alone. The quick run instead reruns every stage each iteration. Each GKX count includes one base run and one temperature-gradient perturbation for each face. The profile permits 8 concurrent jobs, so it submits these jobs in multiple waves.
+The W7-X runs queue more work than `quick_run`. The W7-X quick run has 9 transport cells and 10 faces. Stages 3 and 4 scan its 9 non-axis faces. This produces 9 DKX jobs and 18 GKX jobs in iteration 1. The validation run has 8 cells and 9 faces. It scans 8 non-axis faces and produces 8 DKX jobs and 16 GKX jobs. Its 8 DKX jobs run in iteration 1 only, because its run config freezes Stages 1 through 3 after the first iteration. Later iterations queue Stages 4 and 5 alone. The quick run instead reruns every stage each iteration. Each GKX count includes one base run and one temperature-gradient perturbation for each face. The profile permits 8 concurrent jobs, so it submits these jobs in multiple waves.
 
 ### Recovering a stuck run
 
@@ -107,7 +107,7 @@ Each job's `.err` opens with `[job_wrapper]` diagnostics naming the Snakemake it
 
 ## Further Explanation
 
-The parent image built from `apptainer.def` exists only to give remote HTCondor jobs a stable runtime. Inside it, the workflow launches the stage-specific images for VMEC, BOOZ_XFORM, SFINCS, GKX, and NEOPAX.
+The parent image built from `apptainer.def` exists only to give remote HTCondor jobs a stable runtime. Inside it, the workflow launches the stage-specific images for VMEX, BOOZ_XFORM, DKX, GKX, and NEOPAX.
 
 So the layering is:
 

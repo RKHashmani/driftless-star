@@ -47,7 +47,7 @@ def test_quick_run_paths_match_contract(paths: dict) -> None:
     assert paths["s1_input"] == "inputs/quick_run/vmec_input.HSX_vacuum_ns201_quickrun"
     assert paths["s1_output"] == "outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc"
     assert paths["s2_output"] == "outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc"
-    assert paths["s3_output"] == "outputs/quick_run/stage3_neoclassical/sfincs_jax_flux_profiles.h5"
+    assert paths["s3_output"] == "outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5"
     assert paths["s4_output"] == "outputs/quick_run/stage4_turbulence/neopax_fluxes.h5"
     assert paths["s3_config"] == "inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun"
     assert paths["s4_config"] == "inputs/quick_run/HSX_vacuum_ns201_quickrun.toml"

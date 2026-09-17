@@ -15,7 +15,7 @@ n_radial = 5
 [neoclassical]
 flux_model = "fluxes_r_file"
 entropy_model = "fluxes_r_file"
-neoclassical_file = "../../outputs/quick_run/stage3_neoclassical/sfincs_jax_flux_profiles.h5"
+neoclassical_file = "../../outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5"
 
 [turbulence]
 flux_model = "fluxes_r_file"

@@ -6,11 +6,11 @@
    v                          v                         v
 ┌────────┐  NetCDF  ┌──────────────┐  NetCDF  ┌──────────────────────┐
 │Stage 1 │ -------> │   Stage 2    │ -------> │      Stage 3         │
-│  VMEX  │ wout_*.nc│booz_xform_jax│boozmn_*.nc│        SFINCS        │
+│  VMEX  │ wout_*.nc│booz_xform_jax│boozmn_*.nc│         DKX          │
 └────────┘          └──────────────┘          └──────────┬───────────┘
                           |                              |
                           |                              v
-                          |                 sfincs_jax_flux_profiles.h5
+                          |                 dkx_flux_profiles.h5
                           |                          (HDF5)
                           |                              |
                           |    ┌────────────┐            |
@@ -34,7 +34,7 @@
 
 ## Stage Test Data
 
-A fresh clone ships one runnable, reduced-accuracy example under `inputs/quick_run/`, holding every stage input plus the run config, flat in one folder. Two W7-X cases sit beside it, `w7-x_quick_run/` at that same smoke resolution and `w7-x_t3d_validation/` at the Trinity3D validation resolution. Their Stage 3 SFINCS namelist is not committed. Add it to the run directory first, as the [README](../README.md#usage) Usage section describes. The scripts that consume them live under `stages/`:
+A fresh clone ships one runnable, reduced-accuracy example under `inputs/quick_run/`, holding every stage input plus the run config, flat in one folder. Two W7-X cases sit beside it, `w7-x_quick_run/` at that same smoke resolution and `w7-x_t3d_validation/` at the Trinity3D validation resolution. Their Stage 3 SFINCS namelist for DKX is not committed. Add it to the run directory first, as the [README](../README.md#usage) Usage section describes. The scripts that consume them live under `stages/`:
 
 ```
 inputs/quick_run/
@@ -48,7 +48,7 @@ stages/
 ├── common/                 profile_gradients.py, neopax_geometry.py, neopax_profiles.py
 ├── stage1-equilibrium/     run_vmex.py
 ├── stage2-boozer/          run_boozer.py
-├── stage3-neoclassical/    sfincs_jax_radial_scan.py
+├── stage3-neoclassical/    dkx_radial_scan.py
 ├── stage4-turbulence/      gkx_radial_scan.py
 └── stage5-post-processing/ fit_vmec_pressure_from_transport_h5.py, stage5_post_processing.py
 ```
@@ -142,28 +142,44 @@ python stages/stage2-boozer/run_boozer.py \
 
 ## Stage 3 -- Neoclassical
 
-**Code:** sfincs_jax
+The forward-pass solver is DKX. The stage environment pins version 2.4.0 to Git revision `94506ae337b7825a161a47a614511ab5b538b37b`.
 
 | Direction | Format                       | Location                                                                       |
 | --------- | ---------------------------- | ------------------------------------------------------------------------------ |
 | **In**    | NetCDF `wout_*.nc`           | `outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc` |
+| **In**    | NetCDF `boozmn_*.nc` for the scan's analytical radius | `outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc` |
 | **In**    | Fortran-style Text `input.*` | `inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun`          |
-| **Out**   | HDF5 `sfincs_jax_flux_profiles.h5`       | `outputs/quick_run/stage3_neoclassical/sfincs_jax_flux_profiles.h5`           |
+| **In**    | TOML profiles for the scan | `inputs/quick_run/common_input.toml` |
+| **Out**   | HDF5 scan aggregate | `outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5` |
+| **Out**   | HDF5 from the direct solver task | `outputs/quick_run/stage3_neoclassical/sfincsOutput_quickrun.h5` |
 
 #### How to Install
 
 ```
-pixi install --manifest-path stages/pixi.toml --environment stage-3-sfincs
+pixi install --locked --manifest-path stages/pixi.toml --environment stage-3-dkx
 ```
 
 #### How to Run
 
-```
-pixi run --manifest-path stages/pixi.toml stage-3-sfincs
+For the native output at the single surface in the template, run the direct task after Stage 1.
+
+```sh
+pixi run --locked --manifest-path stages/pixi.toml -e stage-3-dkx stage-3-dkx
 ```
 
-> [!NOTE]
-> The pixi `stage-3-sfincs` task and the Snakemake `stage3_prepare` checkpoint both pass the wout path to `sfincs_jax` via `--wout-path`, overriding the namelist `equilibriumFile` field. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run --manifest-path stages/pixi.toml stage-1-vmex` first. The `sfincs_fortran` backend has no CLI override and still reads `equilibriumFile` from the namelist.
+This task calls `dkx sfincs write-output --input INPUT --out OUTPUT --equilibrium-file WOUT`. Its output retains the native SFINCS field names. It does not aggregate profiles for NEOPAX.
+
+For the forward-pass handoff, run the radial scan after Stages 1 and 2.
+
+```sh
+pixi run --locked --manifest-path stages/pixi.toml -e stage-3-dkx stage-3-dkx-radial-scan --max-parallel 1
+```
+
+The scan uses the quick-run namelist and `common_input.toml` by default. It solves five nonzero surfaces. It writes their flux profiles to `dkx_flux_profiles.h5`. Use `--dkx-template` to choose another namelist. Use `--output` to change the aggregate filename. The scan resolves relative output paths from the working directory. Snakemake runs these phases through its `stage3_prepare`, `stage3_run_one`, and `stage3_collect` rules. These rules use the `stage3.dkx` configuration and the configured output path.
+
+The direct task's `--equilibrium-file` and the scan's `--wout-path` both override the namelist `equilibriumFile`. The scan uses the Boozer output for NEOPAX's analytical profile radius. SFINCS Fortran continues to read `equilibriumFile` from its namelist.
+
+The supported controls include `--cores-per-run`, `--max-parallel`, and GPU selection. See the [Stage 3 spec](stage3-neoclassical/spec.md#output-specification) for cache and contract details.
 
 
 **Code:** SFINCS (Fortran)
@@ -187,7 +203,7 @@ pixi run --manifest-path stages/pixi.toml stage-3-sfincs-fortran
 ```
 
 > [!NOTE]
-> `SFINCS` (Fortran) is an alternative to `sfincs_jax`. It reads the same namelist and writes the native `sfincsOutput.h5`, a different file from the `sfincs_jax_flux_profiles.h5` forward-chain handoff, and is not part of the Snakemake forward pass.
+> `SFINCS` (Fortran) is an alternative to `DKX`. It reads the same namelist and writes the native `sfincsOutput.h5`, a different file from the `dkx_flux_profiles.h5` forward-chain handoff, and is not part of the Snakemake forward pass.
 
 > [!NOTE]
 > The task copies `inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun` to `outputs/quick_run/stage3_neoclassical/input.namelist` before invoking the binary, because SFINCS (Fortran) reads `input.namelist` from its working directory.
@@ -255,7 +271,7 @@ pixi install --manifest-path stages/pixi.toml --environment stage-5-neopax
 Stage 5 is orchestrated by Snakemake (`rule stage5_neopax`), which runs `neopax` on a config assembled from the upstream Stage 1/2/3/4 outputs. See the [Workflow Engine -- Snakemake](#workflow-engine----snakemake) section to run the forward pass through Stage 5, and [Closing the Loop](#closing-the-loop) for feeding the transport solution back into the next forward pass.
 
 > [!NOTE]
-> `NEOPAX`, being the final stage, has additional complexities. Ideally the script using `NEOPAX` runs a loop over `sfincs_jax` fluxes to optimize for ambipolarity, which is the most computationally expensive step in the pipeline.
+> `NEOPAX`, being the final stage, has additional complexities. Ideally the script using `NEOPAX` runs a loop over `DKX` fluxes to optimize for ambipolarity, which is the most computationally expensive step in the pipeline.
 
 ---
 
@@ -271,7 +287,7 @@ Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stag
 | **In**    | Workflow definition | `Snakefile`                                                                                                                                                        |
 | **In**    | Per-stage inputs    | `inputs/quick_run/` (all stage inputs, flat)                                                                                                                       |
 | **Out**   | Stage 2 NetCDF      | `outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc`                                                                                              |
-| **Out**   | Stage 3 HDF5        | `outputs/quick_run/stage3_neoclassical/sfincs_jax_flux_profiles.h5`                                                                                                |
+| **Out**   | Stage 3 HDF5        | `outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5`                                                                                                |
 | **Out**   | Stage 3 cache       | `outputs/quick_run/stage3_neoclassical/manifest.json` + `runs/rho_*/{input.namelist, payload.json, sfincsOutput.h5, result.json}` (per-surface inputs and results) |
 | **Out**   | Stage 4 HDF5        | `outputs/quick_run/stage4_turbulence/neopax_fluxes.h5` (+ `flux_summary.h5`, `manifest.json`, `runs.csv`)                                                          |
 | **Out**   | Stage 4 cache       | `outputs/quick_run/stage4_turbulence/runs/rho_*/wout_HSX_vacuum_ns201_quickrun.eik.nc` (per-radius geometry, regenerated every rerun)                              |
@@ -289,9 +305,9 @@ Stages 3 and 4 do not run as single jobs. Each expands into three rules that fan
 
 1. **`checkpoint stageN_prepare`** -- reads the stage config plus its upstream geometry (both stages take the Stage 1 wout and the Stage 2 boozmn, the latter for the `R00` that fixes NEOPAX's minor radius), then writes `manifest.json` at the stage directory enumerating the surfaces, plus each surface's inputs under `runs/<surf>/` (`input.namelist` + `payload.json` for Stage 3; the runtime `input.toml` + geometry `*.eik.nc` for Stage 4). Surface directory basenames look like `rho_012_r0p4898`. When the Stage 4 config sets `response_mode: fd_gradients`, each base surface directory gains perturbed sibling directories suffixed `_fd_n_<species>` (density-gradient channel) and `_fd_t_<species>` (temperature-gradient channel), one per configured channel-species pair, each a full run directory that fans out as its own `stage4_run_one` job. Stage 3 has no perturbed variants.
 2. **`rule stageN_run_one`** -- one job and one container per surface. Stage 3 solves the surface and writes `runs/<surf>/result.json` (and `sfincsOutput.h5`); Stage 4 evolves it and writes `runs/<surf>/run.diagnostics.csv`.
-3. **`rule stageN_collect`** -- reduces every per-surface output into the stage's declared HDF5 (`sfincs_jax_flux_profiles.h5` / `neopax_fluxes.h5`).
+3. **`rule stageN_collect`** -- reduces every per-surface output into the stage's declared HDF5 (`dkx_flux_profiles.h5` / `neopax_fluxes.h5`).
 
-Which surfaces are scanned is driven by the `stage3.sfincs_jax` / `stage4.gkx` blocks in the run config (`analytical_n_radii` and the commented `num_radii` / `rho_min` / `rho_max` / `rho_indices` alternatives); see each stage's `spec.md`.
+Which surfaces are scanned is driven by the `stage3.dkx` / `stage4.gkx` blocks in the run config (`analytical_n_radii` and the commented `num_radii` / `rho_min` / `rho_max` / `rho_indices` alternatives); see each stage's `spec.md`.
 
 > [!NOTE]
 > `prepare` is a Snakemake `checkpoint` because the surface count can be data-dependent: with `profiles_source: transport_h5` the rho grid is read from a `transport_solution.h5` at run time. A dry run (`snakemake -n`) therefore plans only up to the checkpoints plus the deferred `collect` jobs; the per-surface `run_one` layer materializes only after `prepare` actually runs. Surface-level concurrency is `snakemake --cores`, one job per surface.
@@ -414,7 +430,7 @@ Override it per invocation with `--config docker_user=root`. The value is valida
 
 ### Visualizing the file-flow graph
 
-`--filegraph` renders input/output *files* as nodes and rules as edges, so you see the data flow (wout → boozmn, sfincs_jax_flux_profiles.h5, neopax_fluxes.h5, transport_solution.h5) rather than the abstract job DAG.
+`--filegraph` renders input/output *files* as nodes and rules as edges, so you see the data flow (wout → boozmn, dkx_flux_profiles.h5, neopax_fluxes.h5, transport_solution.h5) rather than the abstract job DAG.
 
 SVG:
 
@@ -490,7 +506,7 @@ Each iteration runs as an independent Snakemake pass with `input_dir`/`output_di
 2. **Prescribes** the evolved kinetic profiles: it copies this pass's `common_input.toml` and replaces the whole `[profiles]` section with `model = "prescribed"` plus the density, temperature, `Er` and face-gradient arrays of the transport solution's final time slice, writing the copy to a *declared* `profiles_feedback` output beside the evolved boundary (`write_prescribed_profiles_from_transport_h5.py ... --output-toml`). The same writer advances `[transport_solver].t0` and `dt` to the solution's `final_time` and `next_dt`. The next pass then continues the transport window instead of re-integrating it. Once the clock is at or past `t_final`, the writer leaves both keys unchanged. Everything else is copied through unchanged, so the result is a drop-in template for the next pass.
 3. **Checks convergence** (`stage5_post_processing.py`), writing `converge_status.json` alongside them.
 
-The driver chains iterations through both artifacts: it seeds iteration N+1's `input/` with iteration N's evolved boundary and its prescribed-profiles `common_input.toml`, re-seeding the Stage 3/4 configs and run config from the base each pass. From iteration 2 it also writes `loop_overrides.yaml` into that iteration's `input/`, setting `stage3.sfincs_jax.profiles_source` and `stage4.gkx.profiles_source` to `prescribed` so both stages read the seeded arrays instead of rebuilding analytical profiles. When [per-stage rerun flags](#per-stage-rerun-flags) freeze part of the pipeline, the same file also records the rerun map and the iteration 1 tree its artifacts are reused from, and the `prescribed` switch is written only for whichever of Stages 3 and 4 still rerun. That file is appended **after** the base run config under the single `--configfile` flag, which Snakemake deep-merges in order with later files taking precedence; a second `--configfile` occurrence would replace the first and silently drop the base config. Committed inputs and templates are never mutated; every artifact lives under `outputs/<run>/loop/`.
+The driver chains iterations through both artifacts: it seeds iteration N+1's `input/` with iteration N's evolved boundary and its prescribed-profiles `common_input.toml`, re-seeding the Stage 3/4 configs and run config from the base each pass. From iteration 2 it also writes `loop_overrides.yaml` into that iteration's `input/`, setting `stage3.dkx.profiles_source` and `stage4.gkx.profiles_source` to `prescribed` so both stages read the seeded arrays instead of rebuilding analytical profiles. When [per-stage rerun flags](#per-stage-rerun-flags) freeze part of the pipeline, the same file also records the rerun map and the iteration 1 tree its artifacts are reused from, and the `prescribed` switch is written only for whichever of Stages 3 and 4 still rerun. That file is appended **after** the base run config under the single `--configfile` flag, which Snakemake deep-merges in order with later files taking precedence; a second `--configfile` occurrence would replace the first and silently drop the base config. Committed inputs and templates are never mutated; every artifact lives under `outputs/<run>/loop/`.
 
 > [!NOTE]
 > From iteration 2 both scans are pinned to the transport face grid (`[geometry].n_radial + 1` faces, less the dropped magnetic-axis face, so 5 surfaces for quick_run), because the prescribed arrays exist only there. This mirrors what `profiles_source: transport_h5` already does. Iteration 1 is not a different grid, because under `analytical` an unset `analytical_n_radii` falls back to that same face count in both stages. The whole loop therefore scans one set of radii, and the ported face operator runs on NEOPAX's own faces, where it reproduces NEOPAX exactly rather than approximating it.
