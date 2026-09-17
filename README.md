@@ -11,6 +11,7 @@ graph LR
     IN["Boundary coefficients<br/>+ profile guesses"] --> S1["<b>Stage 1</b><br/>Equilibrium"]
     S1 -->|"wout_*.nc"| S2["<b>Stage 2</b><br/>Boozer Transform"]
     S2 -->|"boozmn_*.nc"| S3["<b>Stage 3</b><br/>Neoclassical"]
+    S1 -->|"wout_*.nc"| S3
     S2 -->|"geometry"| S4["<b>Stage 4</b><br/>Turbulence"]
     S3 -->|"fluxes"| S5["<b>Stage 5</b><br/>Transport"]
     S4 -->|"heat/particle flux"| S5
@@ -36,7 +37,7 @@ Stages 3 and 4 run in parallel. Each stage should eventually be independently sw
 |-------|---------|-------------|--------------|
 | 1. Equilibrium | Ideal-MHD force balance | [vmex](https://github.com/uwplasma/vmex), [DESC](https://github.com/PlasmaControl/DESC) | [VMEC++](https://github.com/proximafusion/vmecpp) |
 | 2. Boozer Transform | Coordinate transform | [booz_xform_jax](https://github.com/uwplasma/booz_xform_jax) | [BOOZ_XFORM](https://github.com/hiddenSymmetries/booz_xform) |
-| 3. Neoclassical | Effective ripple, drift-kinetic | [NEO_JAX](https://github.com/uwplasma/NEO_JAX), [sfincs_jax](https://github.com/uwplasma/sfincs_jax) | [NEO](https://github.com/PrincetonUniversity/STELLOPT), [SFINCS](https://github.com/landreman/sfincs) |
+| 3. Neoclassical | Effective ripple, drift-kinetic | [NEO_JAX](https://github.com/uwplasma/NEO_JAX), [DKX](https://github.com/uwplasma/DKX) | [NEO](https://github.com/PrincetonUniversity/STELLOPT), [SFINCS](https://github.com/landreman/sfincs) |
 | 4. Turbulence | Gyrokinetic equation | [GKX](https://github.com/uwplasma/GKX) | [GX](https://bitbucket.org/gyrokinetics/gx), [GENE](https://genecode.org) |
 | 5. Transport | Profile evolution, power balance | [NEOPAX](https://github.com/uwplasma/NEOPAX) | [Trinity3D](https://bitbucket.org/gyrokinetics/t3d) |
 
@@ -67,7 +68,7 @@ Install the primary code, document the API and convergence behavior, write examp
   - [ ] `booz_xform_jax`
   - [ ] `BOOZ_XFORM`
 - [ ] Stage 3 -- Neoclassical
-  - [ ] `sfincs_jax`
+  - [ ] `DKX`
   - [ ] `NEO_JAX`
   - [ ] `NEO`
   - [ ] `SFINCS`
@@ -92,7 +93,7 @@ Containerize stages and write tests. Full checklist in the [Guide](docs/guide.md
   - [x] `BOOZ_XFORM`
 - [ ] Stage 3 -- Neoclassical
   - [x] `NEO_JAX`
-  - [x] `sfincs_jax`
+  - [x] `DKX`
   - [ ] `NEO`
   - [x] `SFINCS`
 - [ ] Stage 4 -- Turbulence

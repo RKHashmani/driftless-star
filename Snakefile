@@ -54,7 +54,7 @@ if CONTAINER_RUNTIME not in ("docker", "apptainer"):
 
 STAGE1_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-1-vmex-{DEVICE}"
 STAGE2_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-2-booz-jax-{DEVICE}"
-STAGE3_JAX_IMG = f"ghcr.io/driftless-star/driftless-star:stage-3-sfincs-{DEVICE}"
+STAGE3_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-3-dkx-{DEVICE}"
 STAGE4_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-4-gkx-{DEVICE}"
 STAGE5_IMG     = f"ghcr.io/driftless-star/driftless-star:stage-5-neopax-{DEVICE}"
 
@@ -154,7 +154,7 @@ if REUSE_OUTPUT_DIR is not None:
     if not RERUN["stage4"]:
         S4_OUTPUT = P_REUSE["s4_output"]
 
-STAGE3_CFG = config["stage3"]["sfincs_jax"]
+STAGE3_CFG = config["stage3"]["dkx"]
 STAGE4_CFG = config["stage4"]["gkx"]
 # Resolved here rather than beside its rule so a misspelled convention is caught even when the run freezes Stage 4.
 RADIUS_RELABEL_CONVENTION = stage4_helper.resolve_radius_relabel(config)
@@ -221,7 +221,7 @@ if RERUN["stage3"]:
         shell:
             stage3_helper.prepare_cmd(
                 docker_prefix=CONTAINER_PREFIX_CPU,
-                image=container_image_location(STAGE3_JAX_IMG),
+                image=container_image_location(STAGE3_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
                 device=DEVICE,
@@ -239,7 +239,7 @@ if RERUN["stage3"]:
         shell:
             stage3_helper.run_one_cmd(
                 docker_prefix=CONTAINER_PREFIX,
-                image=container_image_location(STAGE3_JAX_IMG),
+                image=container_image_location(STAGE3_IMG),
                 output_dir=P["stage3_dir"],
                 device=DEVICE,
             ) + " 2>&1 | tee {log}"
@@ -265,9 +265,10 @@ if RERUN["stage3"]:
         shell:
             stage3_helper.collect_cmd(
                 docker_prefix=CONTAINER_PREFIX_CPU,
-                image=container_image_location(STAGE3_JAX_IMG),
+                image=container_image_location(STAGE3_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
+                output_file=S3_OUTPUT,
             ) + " 2>&1 | tee {log}"
 
 if RERUN["stage4"]:

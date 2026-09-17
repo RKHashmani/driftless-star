@@ -72,7 +72,7 @@ def resolve_pipeline_paths(
     ...         "s5_config": "common_input.toml",
     ...         "s1_output": "wout_{run_name}.nc",
     ...         "s2_output": "boozmn_{run_name}.nc",
-    ...         "s3_output": "sfincs_jax_flux_profiles.h5",
+    ...         "s3_output": "dkx_flux_profiles.h5",
     ...         "s4_output": "neopax_fluxes.h5",
     ...         "s5_output": "transport_solution.h5",
     ...         "s5_signal": "converge_status.json",

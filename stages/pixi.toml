@@ -53,14 +53,27 @@ cp ../inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun ../outputs/quick_r
 cd ../outputs/quick_run/stage3_neoclassical && \
 sfincs"""
 
-[feature.sfincs-jax.dependencies]
-sfincs-jax = ">=1.1.0,<2"
+[feature.dkx.dependencies]
+# DKX and hashlib.file_digest require Python 3.11 or later.
+python = ">=3.11,<3.15"
+jax = ">=0.10.2,<0.11"
+jaxlib = ">=0.10.2,<0.11"
+numpy = ">=2.5.1,<3"
+scipy = ">=1.17.1,<2"
+h5py = ">=3.16.0,<4"
+netcdf4 = ">=1.7.4,<2"
+matplotlib-base = ">=3.10.8,<4"
+rich = ">=13,<16"
+solvax = ">=0.22.0,<0.23"
 
-[feature.sfincs-jax.tasks.stage-3-sfincs]
-cmd = "sfincs_jax ../inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun --out ../outputs/quick_run/stage3_neoclassical/sfincsOutput_quickrun.h5 --wout-path ../outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc"
+[feature.dkx.pypi-dependencies]
+dkx = { git = "https://github.com/uwplasma/DKX.git", rev = "94506ae337b7825a161a47a614511ab5b538b37b" }
 
-[feature.sfincs-jax.tasks.stage-3-sfincs-radial-scan]
-cmd = "python stage3-neoclassical/sfincs_jax_radial_scan.py"
+[feature.dkx.tasks.stage-3-dkx]
+cmd = "dkx sfincs write-output --input ../inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun --out ../outputs/quick_run/stage3_neoclassical/sfincsOutput_quickrun.h5 --equilibrium-file ../outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc"
+
+[feature.dkx.tasks.stage-3-dkx-radial-scan]
+cmd = "python stage3-neoclassical/dkx_radial_scan.py"
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [feature.neo-jax.dependencies]
@@ -127,8 +140,8 @@ stage-2-booz = {features = ["booz-xform", "cpu"], no-default-feature = true }
 stage-2-booz-jax = {features = ["booz-xform-jax", "cpu"], no-default-feature = true }
 stage-2-booz-jax-gpu = {features = ["booz-xform-jax", "cuda"], no-default-feature = true }
 stage-3-sfincs-fortran = {features = ["sfincs", "cpu"], no-default-feature = true}
-stage-3-sfincs = {features = ["sfincs-jax", "cpu"], no-default-feature = true}
-stage-3-sfincs-gpu = {features = ["sfincs-jax", "cuda"], no-default-feature = true }
+stage-3-dkx = {features = ["dkx", "cpu"], no-default-feature = true}
+stage-3-dkx-gpu = {features = ["dkx", "cuda"], no-default-feature = true }
 stage-3-neo-jax = {features = ["neo-jax", "cpu"], no-default-feature = true}
 stage-3-neo-jax-gpu = {features = ["neo-jax", "cuda"], no-default-feature = true }
 stage-4-gkx = {features = ["gkx", "cpu"], no-default-feature = true}

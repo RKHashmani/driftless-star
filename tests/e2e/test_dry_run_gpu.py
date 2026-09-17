@@ -34,8 +34,8 @@ ALL_SLOT_PREFIX = "python -m src.gpu_slots --gpu-ids all --jobs-per-gpu 1 --lock
 
 # Each marker identifies one CPU container launch. Post-processing runs three scripts in one container.
 DEVICE_FREE_COMMANDS = (
-    "sfincs_jax_radial_scan.py prepare",
-    "sfincs_jax_radial_scan.py collect",
+    "dkx_radial_scan.py prepare",
+    "dkx_radial_scan.py collect",
     "gkx_radial_scan.py prepare",
     "gkx_radial_scan.py collect",
     "relabel_neopax_flux_radius.py",
@@ -59,6 +59,7 @@ def test_null_pool_plans_cpu_images_with_no_gpu_container_flag(tmp_path: Path) -
     assert "--gpus" not in output, output
     assert "src.gpu_slots" not in output, output
     assert "stage-1-vmex-cpu" in output, output
+    assert "stage-3-dkx-cpu" in output, output
 
 
 # Naming the host instead of a pool still pins every solver job to one device, so an "all" run is wrapped like an
@@ -72,6 +73,9 @@ def test_all_plans_wrapped_containers_pinned_to_one_device(tmp_path: Path) -> No
     assert ALL_SLOT_PREFIX in output, output
     assert "--gpus device=@GPU_ID@" in output, output
     assert "stage-1-vmex-gpu" in output, output
+    stage3_command = next(line for line in output.splitlines() if "dkx_radial_scan.py prepare" in line)
+    assert "stage-3-dkx-gpu" in stage3_command, output
+    assert "--backend gpu" in stage3_command, output
     stage1_command = next(line for line in output.splitlines() if "run_vmex.py" in line)
     assert "--device gpu" in stage1_command, output
     assert "--gpus all" not in output, output

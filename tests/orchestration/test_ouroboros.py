@@ -33,7 +33,7 @@ def _write_config(tmp_path: Path, loop: dict | None = None) -> Path:
             "s1_output": "wout_{run_name}.nc",
             "s2_output": "boozmn_{run_name}.nc",
             "s3_config": "sfincs_input.{run_name}",
-            "s3_output": "sfincs_flux.h5",
+            "s3_output": "dkx_flux_profiles.h5",
             "s4_config": "{run_name}.toml",
             "s4_output": "neopax_fluxes.h5",
             "s5_config": "common_input.toml",
@@ -209,7 +209,7 @@ def test_loop_passes_prescribed_overrides_from_second_iteration(
     assert extras[0] is None
     assert len(extras[1]) == 1
     overrides = yaml.safe_load(extras[1][0].read_text())
-    assert overrides["stage3"]["sfincs_jax"]["profiles_source"] == "prescribed"
+    assert overrides["stage3"]["dkx"]["profiles_source"] == "prescribed"
     assert overrides["stage4"]["gkx"]["profiles_source"] == "prescribed"
     assert "loop" not in overrides
     # The overrides file lives inside the iteration's input dir, alongside the seeded inputs.
@@ -369,7 +369,7 @@ def test_overrides_carry_rerun_flags_and_the_reuse_tree(monkeypatch: pytest.Monk
 
     overrides = _overrides_of_second_iteration(monkeypatch, config_path)
 
-    assert overrides["stage3"]["sfincs_jax"]["profiles_source"] == "prescribed"
+    assert overrides["stage3"]["dkx"]["profiles_source"] == "prescribed"
     assert overrides["stage4"]["gkx"]["profiles_source"] == "prescribed"
     assert overrides["loop"]["rerun"] == {
         "stage1": False, "stage2": False, "stage3": True, "stage4": True, "stage5": True,
@@ -400,7 +400,7 @@ def test_write_loop_overrides_defaults_to_the_prescribed_switch_only(tmp_path: P
     path = ouroboros._write_loop_overrides(tmp_path)
 
     assert yaml.safe_load(path.read_text()) == {
-        "stage3": {"sfincs_jax": {"profiles_source": "prescribed"}},
+        "stage3": {"dkx": {"profiles_source": "prescribed"}},
         "stage4": {"gkx": {"profiles_source": "prescribed"}},
     }
 
