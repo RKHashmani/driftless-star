@@ -31,7 +31,9 @@ from pathlib import Path
 import yaml
 
 from .signal_contract import validate_signal
+from .stage5_helper import read_rho_edge
 from .utils import LOOP_STAGES, resolve_gpu_settings, resolve_pipeline_paths, resolve_rerun_flags
+from .utils.loop import validate_pressure_feedback_grid
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +310,7 @@ def main() -> None:
 
     base_out = config["output_dir"]
     base_p = resolve_pipeline_paths(config)
+    validate_pressure_feedback_grid(config, read_rho_edge(str(_abs(repo_root, base_p["s5_config"]))))
 
     max_iters = args.max_iters
     if not any(rerun.values()):

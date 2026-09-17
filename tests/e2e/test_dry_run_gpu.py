@@ -7,7 +7,7 @@ planned text alone on a machine with no GPU and no Docker.
 What is pinned here is the boundary between the modes. A cpu run must plan no GPU
 container flag, while both GPU modes must route every device-taking container launch
 through the allocator, because one unwrapped launch would take a device the allocator
-believes is free. Steps that only rewrite a file are planned with neither a device nor
+believes is free. Preparation, collection, and post-processing use neither a device nor
 the allocator and are counted out, since the guarantee is that no launch reaches a
 device unallocated rather than that every launch takes one. The two GPU modes differ
 only in where the pool comes from. An explicit list is planned as ids, and "all" is
@@ -32,15 +32,20 @@ from tests.e2e.test_dry_run_dag import _dry_run
 SLOT_PREFIX = "python -m src.gpu_slots --gpu-ids 4,5 --jobs-per-gpu 2 --lock-dir .snakemake/gpu_slots -- "
 ALL_SLOT_PREFIX = "python -m src.gpu_slots --gpu-ids all --jobs-per-gpu 1 --lock-dir .snakemake/gpu_slots -- "
 
-# Scripts that only rewrite a file, so they are planned without a device and without the allocator and are counted
-# out of the every-launch-is-wrapped totals below. The guarantee is that no launch reaches a device unallocated,
-# not that every launch takes one.
-DEVICE_FREE_SCRIPTS = ("relabel_neopax_flux_radius.py",)
+# Each marker identifies one CPU container launch. Post-processing runs three scripts in one container.
+DEVICE_FREE_COMMANDS = (
+    "dkx_radial_scan.py prepare",
+    "dkx_radial_scan.py collect",
+    "gkx_radial_scan.py prepare",
+    "gkx_radial_scan.py collect",
+    "relabel_neopax_flux_radius.py",
+    "fit_vmec_pressure_from_transport_h5.py",
+)
 
 
 def _launch_counts(output: str) -> tuple[int, int, int]:
     """Return (launches taking a device, allocator invocations, launches planned without a device)."""
-    device_free = sum(output.count(script) for script in DEVICE_FREE_SCRIPTS)
+    device_free = sum(output.count(command) for command in DEVICE_FREE_COMMANDS)
     return output.count("docker run") - device_free, output.count("src.gpu_slots"), device_free
 
 
@@ -57,7 +62,7 @@ def test_null_pool_plans_cpu_images_with_no_gpu_container_flag(tmp_path: Path) -
     assert "stage-3-dkx-cpu" in output, output
 
 
-# Naming the host instead of a pool still pins every job to one device, so an "all" run must be wrapped exactly like an
+# Naming the host instead of a pool still pins every solver job to one device, so an "all" run is wrapped like an
 # explicit pool, with the word carried through to the allocator and the id token left for it to substitute. The plan
 # must never hand a container the whole machine, which is what the retired --gpus all flag did and what would let two
 # jobs share a device the allocator believes it gave to one of them.
@@ -82,11 +87,11 @@ def test_all_plans_wrapped_containers_pinned_to_one_device(tmp_path: Path) -> No
     assert output.count("--gpus device=@GPU_ID@") == allocated, output
 
 
-# With an explicit pool the guarantee is that no container can reach a device without going through the allocator, so
-# the count of planned launches and the count of allocator invocations must match exactly. A single unwrapped launch
+# With an explicit pool every GPU container must go through the allocator, so
+# the count of GPU launches and allocator invocations must match. A single unwrapped GPU launch
 # would see a device the allocator has already handed to another job. The token is left unsubstituted in the plan
 # because the id is only known once a slot is acquired at run time.
-def test_pinned_pool_wraps_every_planned_container(tmp_path: Path) -> None:
+def test_pinned_pool_wraps_every_gpu_container(tmp_path: Path) -> None:
     result = _dry_run(tmp_path, targets=[], config_overrides=["gpu_ids=4,5", "jobs_per_gpu=2"], printshellcmds=True)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output

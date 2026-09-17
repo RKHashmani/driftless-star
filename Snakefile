@@ -5,6 +5,7 @@ import posixpath
 from pathlib import Path
 
 from src import stage3_helper, stage4_helper, stage5_helper
+from src.utils.loop import pressure_feedback_command
 from src.utils import (
     resolve_docker_user,
     resolve_gpu_settings,
@@ -31,6 +32,7 @@ DEVICE = GPU.device
 # Per-stage rerun flags for the closed loop, validated at parse time so a bad combination fails before any job runs.
 # Freezing a stage means reading its artifacts from an earlier pass, which takes an address from loop.reuse_output_dir.
 # A plain forward pass and the loop's first iteration therefore always run every stage.
+PRESSURE_FEEDBACK_COMMAND = pressure_feedback_command(config)
 RERUN = resolve_rerun_flags(config)
 REUSE_OUTPUT_DIR = (config.get("loop") or {}).get("reuse_output_dir")
 if REUSE_OUTPUT_DIR is None:
@@ -81,8 +83,8 @@ def _apptainer_image_ref(image: str) -> str:
 
 CONTAINER_PYTHONPATH = "/work/stages"
 
-# Docker keeps the newer per-device slot allocator. On HTCondor, each Apptainer
-# job already receives one isolated GPU, which `--nv` exposes to the nested SIF.
+# Docker uses the per-device slot allocator. HTCondor assigns each solver job
+# one isolated GPU, which `--nv` exposes to the nested Apptainer image.
 if CONTAINER_RUNTIME == "docker":
     gpu_flag = ""
     slot_prefix = ""
@@ -100,7 +102,6 @@ if CONTAINER_RUNTIME == "docker":
         '-v "$PWD:/work" -w /work '
     )
     CONTAINER_PREFIX = f"{slot_prefix}docker run --rm --pull=missing {gpu_flag}{docker_tail}"
-    # File-rewrite helpers need neither a GPU flag nor a scheduling slot.
     CONTAINER_PREFIX_CPU = f"docker run --rm --pull=missing {docker_tail}"
 
     def container_image_location(image: str) -> str:
@@ -219,7 +220,7 @@ if RERUN["stage3"]:
             f"{P['stage3_dir']}/{RUN_NAME}.prepare.log"
         shell:
             stage3_helper.prepare_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE3_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
@@ -263,7 +264,7 @@ if RERUN["stage3"]:
             f"{P['stage3_dir']}/{RUN_NAME}.collect.log"
         shell:
             stage3_helper.collect_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE3_IMG),
                 stage_cfg=STAGE3_CFG,
                 output_dir=P["stage3_dir"],
@@ -283,7 +284,7 @@ if RERUN["stage4"]:
             f"{P['stage4_dir']}/{RUN_NAME}.prepare.log"
         shell:
             stage4_helper.prepare_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE4_IMG),
                 stage_cfg=STAGE4_CFG,
                 output_dir=P["stage4_dir"],
@@ -354,7 +355,7 @@ if RERUN["stage4"]:
             # Grouped so the pipe captures both commands, since `a && b | tee` would bind the pipe
             # to b alone and drop the collect output from the log.
             "( " + stage4_helper.collect_cmd(
-                docker_prefix=CONTAINER_PREFIX,
+                docker_prefix=CONTAINER_PREFIX_CPU,
                 image=container_image_location(STAGE4_IMG),
                 stage_cfg=STAGE4_CFG,
                 output_dir=P["stage4_dir"],
@@ -390,9 +391,8 @@ rule stage5_post_processing:
         profiles_feedback = S5_CONFIG_FEEDBACK,
     log:    f"{P['stage5_post_dir']}/{RUN_NAME}.log"
     shell:
-        f'{container_image_ref(STAGE5_IMG)} sh -c "'
-        'python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py '
-        'write-input {input.transport} {input.s1_input} --output-input {output.feedback} && '
+        f'{CONTAINER_PREFIX_CPU}{container_image_location(STAGE5_IMG)} sh -c "'
+        + PRESSURE_FEEDBACK_COMMAND + ' && '
         'python stages/stage5-post-processing/write_prescribed_profiles_from_transport_h5.py '
         '{input.transport} {input.common_config} --output-toml {output.profiles_feedback} && '
         'python stages/stage5-post-processing/stage5_post_processing.py '

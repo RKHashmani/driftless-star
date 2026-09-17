@@ -364,8 +364,8 @@ To iterate this pass toward transport-consistent profiles instead of stopping at
 Per-invocation overrides via `--config` (layered on top of the config file):
 
 ```
-pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 4 --config gpu_ids=all                    # use -gpu images, one job pinned per host GPU
-pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 8 --config gpu_ids=4,5,6,7 jobs_per_gpu=2 # use -gpu images, pinning each job to one of 8 slots across GPUs 4-7
+pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 4 --config gpu_ids=all                    # use -gpu images, one solver job pinned per host GPU
+pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --cores 8 --config gpu_ids=4,5,6,7 jobs_per_gpu=2 # use -gpu images, pinning each solver job to one of 8 slots across GPUs 4-7
 ```
 
 Defining another run via its own config file:
@@ -389,24 +389,24 @@ Two top-level run-config keys decide which image variant every stage runs and wh
 ```yaml
 # Container runtime GPU pool. One of:
 # null: run every stage on CPU images with no GPU access.
-# "all": run GPU images, pinning each concurrent job to one free GPU of the execution host
-# ids e.g. "4,5,6,7": run GPU images with each concurrent job pinned to one free id from the pool.
+# "all": run GPU images, pinning each concurrent solver job to one free GPU of the execution host
+# ids e.g. "4,5,6,7": run GPU images with each concurrent solver job pinned to one free id from the pool.
 gpu_ids: null
-# Concurrent jobs allowed per GPU.
+# Concurrent solver jobs allowed per GPU.
 jobs_per_gpu: 1
 ```
 
-**How pinning works.** In GPU mode every job's `docker run` is wrapped by the slot allocator (`python -m src.gpu_slots ... -- docker run --gpus device=@GPU_ID@ ...`). An explicit id list is passed through as written; `gpu_ids: "all"` is resolved by the wrapper on the execution host when the job starts, taking the ids `CUDA_VISIBLE_DEVICES` lists when that variable is set (exporting it is the supported way to restrict `"all"` on a shared host) and every GPU `nvidia-smi` reports otherwise. The wrapper takes an exclusive `flock` on one lock file per slot under `.snakemake/gpu_slots/` (relative to the invocation directory, i.e. the repo root), substitutes the acquired id into the command's `@GPU_ID@` token, and holds the lock for the container's whole lifetime. The kernel drops a `flock` when the holding process exits for any reason, so a crashed or cancelled job frees its slot with no stale-lock cleanup. Each job logs `[gpu_slots] acquired GPU <id>`, and a job that finds every slot taken logs one `[gpu_slots] waiting for a free GPU slot` line before it blocks, because a rule's `2>&1 | tee {log}` pipe covers the wrapper as well as the container.
+**How pinning works.** In GPU mode each solver job's `docker run` is wrapped by the slot allocator (`python -m src.gpu_slots ... -- docker run --gpus device=@GPU_ID@ ...`). An explicit id list is passed through as written; `gpu_ids: "all"` is resolved by the wrapper on the execution host when the job starts, taking the ids `CUDA_VISIBLE_DEVICES` lists when that variable is set (exporting it is the supported way to restrict `"all"` on a shared host) and every GPU `nvidia-smi` reports otherwise. The wrapper takes an exclusive `flock` on one lock file per slot under `.snakemake/gpu_slots/` (relative to the invocation directory, i.e. the repo root), substitutes the acquired id into the command's `@GPU_ID@` token, and holds the lock for the container's whole lifetime. The kernel drops a `flock` when the holding process exits for any reason, so a crashed or cancelled job frees its slot with no stale-lock cleanup. Each wrapped job logs `[gpu_slots] acquired GPU <id>`, and a solver job that finds every slot taken logs one `[gpu_slots] waiting for a free GPU slot` line before it blocks, because a rule's `2>&1 | tee {log}` pipe covers the wrapper as well as the container.
 
-**Enforcement boundary.** Every pipeline job is wrapped, the single-job Stages 1, 2, and 5 and the Stage 3/4 `prepare` and `collect` phases included, so no pipeline container can reach a device outside the pool, and every container sees exactly one GPU regardless of mode.
+**Enforcement boundary.** GPU access is enabled for the Stage 1, 2, and 5 solvers and the Stage 3/4 `run_one` jobs. Stage 3/4 `prepare` and `collect`, radius relabelling, and Stage 5 post-processing reuse the selected images without GPU flags or slot allocation.
 
-**Concurrency.** Job concurrency is still `snakemake --cores`, one job per surface (see [Per-surface fan-out](#per-surface-fan-out-stages-3-and-4)). The pool offers pool size times `jobs_per_gpu` slots, so saturating it takes at least that many cores. Asking for more cores than slots is safe, since the surplus jobs block on the flock and log the waiting line until a slot frees up.
+**Concurrency.** Job concurrency is still `snakemake --cores`, one job per surface (see [Per-surface fan-out](#per-surface-fan-out-stages-3-and-4)). The pool offers pool size times `jobs_per_gpu` slots, so saturating it takes at least that many cores. Asking for more cores than slots is safe, since the surplus solver jobs block on the flock and log the waiting line until a slot frees up.
 
 **Sharing a device.** Raising `jobs_per_gpu` is deliberate oversubscription and requires `gpu_ids` to name GPUs (`"all"` or an id list), so several JAX containers then share one device. The per-surface workers disable JAX VRAM preallocation, but co-located jobs can still exhaust a device's memory, which makes the count something to size against how much VRAM one surface needs. Both keys are validated by `resolve_gpu_settings` (`src/utils/gpu.py`) at Snakefile parse time and again at driver startup, so an unusable pool fails before any job runs; a config still carrying the removed `device` key fails the same way, with a migration hint.
 
 **On the command line.** `--config gpu_ids=4,5,6,7 jobs_per_gpu=2` overrides the file for one invocation, and CPU mode is either `gpu_ids=null` or an empty `gpu_ids=`. Snakemake parses the CLI value itself, and the validator accepts both the `"null"` string and `None` that this produces. The [closed-loop driver](#closing-the-loop) takes the same two settings as `--gpu-ids` / `--jobs-per-gpu`.
 
-**Limitations.** Concurrent pipeline invocations share slot accounting only when they are launched from the same working copy, since the lock files live under that copy's `.snakemake/gpu_slots/`, and only when they agree on `jobs_per_gpu`. Two users running from their own copies therefore allocate independently, and under `gpu_ids: "all"` both pools resolve to every GPU of the host, so each device runs twice the jobs asked for while both runs' `[gpu_slots] acquired` lines still report one job per device. Give each user a disjoint `CUDA_VISIBLE_DEVICES` share so their pools cannot overlap. The slot allocator also needs a POSIX host, since `fcntl.flock` has no Windows implementation, so GPU mode requires WSL2 rather than Git Bash; CPU mode wraps no job and is unaffected. Runtime Apptainer support is a planned follow-up; its per-device mechanism would be the `CUDA_VISIBLE_DEVICES` environment variable, since `apptainer --nv` has no per-device flag.
+**Limitations.** Concurrent pipeline invocations share slot accounting only when they are launched from the same working copy, since the lock files live under that copy's `.snakemake/gpu_slots/`, and only when they agree on `jobs_per_gpu`. Two users running from their own copies therefore allocate independently, and under `gpu_ids: "all"` both pools resolve to every GPU of the host, so each device runs twice the jobs asked for while both runs' `[gpu_slots] acquired` lines still report one job per device. Give each user a disjoint `CUDA_VISIBLE_DEVICES` share so their pools cannot overlap. The slot allocator also needs a POSIX host, since `fcntl.flock` has no Windows implementation, so GPU mode requires WSL2 rather than Git Bash; CPU mode wraps no job and is unaffected. For HTCondor with Apptainer, the scheduler assigns GPUs to solver jobs and the workflow exposes them with `--nv`. See [Running on an HTCondor cluster](../executors/htcondor/README.md).
 
 ### Container user (rootful and rootless runtimes)
 
@@ -474,7 +474,7 @@ Jobs that are already up to date are drawn with dashed borders. Prefer SVG: a fa
 
 ## Closing the Loop
 
-The pipeline can iterate toward a transport-consistent state by feeding Stage 5's transport solution back into the next forward pass along two paths: a new Stage 1 boundary fit from the evolved pressure, and the evolved kinetic profiles prescribed to Stages 3, 4, and 5. Each iteration runs under its own `outputs/<run>/loop/iter_N/` tree, so the feedback never forms a cycle within a single Snakemake DAG; instead an external driver (`src/ouroboros.py`, exposed as the `driftless-star` pixi task) sequences the iterations, each as an independent Snakemake run, seeding each pass from the previous pass's feedback artifacts. Committed inputs under `inputs/<run>/` are only ever read.
+The pipeline repeats forward passes toward a transport-consistent state. Stage 5's transport solution supplies two kinds of feedback for the next pass. A new Stage 1 input contains the evolved pressure. Stages 3, 4, and 5 read the evolved kinetic profiles as prescribed profiles. Each iteration uses its own `outputs/<run>/loop/iter_N/` directory. Thus, feedback does not form a cycle within a single Snakemake DAG. The external driver (`src/ouroboros.py`, exposed as the `driftless-star` pixi task) runs each iteration as an independent Snakemake run. It copies the previous pass's feedback files into the next pass's inputs. The driver reads committed inputs under `inputs/<run>/` without changing them.
 
 ### How to Run
 
@@ -502,7 +502,7 @@ pixi run driftless-star --max-iters 3 --cores 4
 
 Each iteration runs as an independent Snakemake pass with `input_dir`/`output_dir` overridden to that iteration's `outputs/<run>/loop/iter_N/{input,output}/`, targeting the **convergence signal file** rather than the default `rule all`. Targeting the signal pulls in `rule stage5_post_processing`, so the chain built is Stage 1 → … → Stage 5 → post-processing. Inside the Stage 5 container, post-processing:
 
-1. **Fits** a VMEC pressure profile from this pass's `transport_solution.h5` onto the base boundary and writes the evolved boundary to a *declared* `feedback` output under `outputs/<run>/loop/iter_N/output/stage5_post_processing/` (`fit_vmec_pressure_from_transport_h5.py write-input ... --output-input`). The committed input is read, never written, so the DAG stays acyclic. Like Stages 3 and 4, the fit reads the solution's `rho_face` / `*_faces` face state rather than its cell-centered datasets: VMEC evaluates the fitted `AM` power series over the whole of `s = rho**2` in `[0, 1]`, and the cell centers stop short of `rho = rho_edge`, so a series fitted on them is extrapolated across the plasma edge and can come out negative there. A solution carrying only the centered datasets is rejected rather than extrapolated.
+1. **Exports pressure** from this pass's `transport_solution.h5` into a copy of its Stage 1 input. The default `power_series` mode fits a polynomial to the total face pressure. Both spline modes write every `rho_face**2` knot to `AM_AUX_S`. They write the sum of all species' face pressure to `AM_AUX_F`. The writer multiplies NEOPAX pressure once by `16021.76634` to give pascals. It sets `PRES_SCALE` to `1`. The workflow declares the feedback file under `outputs/<run>/loop/iter_N/output/stage5_post_processing/`. The writer does not change the committed input. When Stage 1 is configured as frozen, this step copies the unchanged input. It logs that it skipped pressure export. This also applies in iteration 1.
 2. **Prescribes** the evolved kinetic profiles: it copies this pass's `common_input.toml` and replaces the whole `[profiles]` section with `model = "prescribed"` plus the density, temperature, `Er` and face-gradient arrays of the transport solution's final time slice, writing the copy to a *declared* `profiles_feedback` output beside the evolved boundary (`write_prescribed_profiles_from_transport_h5.py ... --output-toml`). The same writer advances `[transport_solver].t0` and `dt` to the solution's `final_time` and `next_dt`. The next pass then continues the transport window instead of re-integrating it. Once the clock is at or past `t_final`, the writer leaves both keys unchanged. Everything else is copied through unchanged, so the result is a drop-in template for the next pass.
 3. **Checks convergence** (`stage5_post_processing.py`), writing `converge_status.json` alongside them.
 
@@ -534,6 +534,50 @@ The writer hard-fails when the transport solution's `rho` or `rho_face` does not
 
 Values are SI, matching what NEOPAX's prescribed-profile model consumes: density in m^-3 and temperature in eV. The transport solution stores 1e20 m^-3 and keV, so the writer scales density by 1e20 and temperature by 1e3; `Er` is already in kV/m and passes through unchanged. `density_grad_face` and `temperature_grad_face` carry those same units per unit rho, m^-3 and eV per unit rho, and take the same two scalings. The Stage 3 and 4 readers divide back to their internal 1e20 m^-3 and keV units.
 
+### Pressure interpolation
+
+This feedback applies to any equilibrium case whose transport grid covers `rho = 0` through `rho = 1`. It does not depend on a particular device. The committed `quick_run` case uses the full-radius default. It selects `power_series` explicitly. To use Akima, set the following option in the run config.
+
+```yaml
+loop:
+  pressure_profile_type: akima_spline
+```
+
+The choices are `akima_spline`, `cubic_spline`, and `power_series`. If you omit the setting, the workflow selects `power_series`. Both spline modes pass the supplied samples directly to VMEX. The writer keeps the axis and edge samples. It rejects more than 101 spline knots. It requires finite, strictly increasing radii that span `[0, 1]`. It corrects endpoint roundoff only within `1e-12`. Pressure must be finite and non-negative. The writer does not extrapolate or rescale truncated grids. When Stage 1 evolves, the loop driver rejects a configured `rho_edge < 1`. The writer then checks the actual grid.
+
+The [pinned VMEX profile implementation](https://github.com/uwplasma/vmex/blob/35e7170a24ab33fce4d4d25dc7f448279c279e7f/vmex/core/profiles.py) evaluates both spline types in pascals. Interpolation between samples can overshoot or change gradient sign. The writer does not clip or smooth samples. Splines do not guarantee better equilibrium convergence.
+
+Run the loop with `quick_run` using the existing stage images.
+
+```bash
+pixi run driftless-star --config inputs/quick_run/config.yaml --max-iters 2 --cores 4
+```
+
+The convergence signal can stop the loop before two iterations. The pressure writer also defaults to `power_series`. To export a polynomial profile manually, run the following command. Only polynomial mode accepts `--degree` and `--drop-axis`.
+
+```bash
+python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py \
+  write-input transport_solution.h5 input.vmec --output-input input.polynomial \
+  --profile-type power_series --degree 8
+```
+
+Spline and polynomial export convert pressure to pascals. The shared loader keeps NEOPAX units. This leaves the convergence calculation unchanged. The writer removes obsolete pressure arrays. It replaces complete pressure assignments, including indexed and multiline forms. It keeps boundary, current, and other equilibrium settings unchanged.
+
+The [pinned VMEX compatibility check](../tests/helpers/check_vmex_pressure.py) verifies parsing, the selected spline mode, knot preservation, pressure scaling, and representative pressure evaluations.
+
+The optional [pressure diagnostic](../tools/diagnose_vmex_pressure.py) explores derivatives and interval overshoot on synthetic profiles. For its sharp six-knot profile, cubic interpolation reaches about `-28,677 Pa` despite all samples being positive. Akima has no interval overshoot in that test. These diagnostics do not establish equilibrium convergence.
+
+Run the diagnostic separately from the regression tests, from the repository root.
+
+```bash
+docker run --rm -v "$PWD:/work:ro" -w /work \
+  ghcr.io/driftless-star/driftless-star:stage-1-vmex-cpu \
+  python tools/diagnose_vmex_pressure.py
+```
+
+When you inspect equilibrium output, compare WOUT `pres` with the spline at its half-grid radii. VMEX averages interior half-grid values to reconstruct `presf`. It extrapolates values to the full-grid endpoints. On a coarse equilibrium grid, these reconstructed endpoint values can differ from the supplied spline knots. The pressure input keeps the original samples.
+
+
 ### Why per-iteration `input_dir`/`output_dir`
 
 Each iteration writes into its own `outputs/<run>/loop/iter_N/output/` tree. This is load-bearing: Stages 3 and 4 cache their per-radius runs keyed by output directory, so a single shared output dir would reuse the first pass's cache and feed Stage 5 **stale** neoclassical/turbulent fluxes on every subsequent pass. Distinct `iter_N` trees force Stages 3/4 to recompute each iteration by default. Skipping that recomputation stays opt-in and explicit rather than a stale-cache accident, since the only sanctioned way to ask for it is [`loop.rerun`](#per-stage-rerun-flags), which makes the Snakefile omit the frozen stage's rules and point its consumers at the iteration 1 tree by name.
@@ -558,7 +602,7 @@ Omitted keys default to `true`, so an absent block reproduces exactly the behavi
 
 **How the flags take effect.** A plain `snakemake` never freezes anything; it validates the block and then treats every stage as rerunning. The flags bite only through the driver's `loop_overrides.yaml`, which from iteration 2 restates the validated flag map under `loop.rerun` and adds `loop.reuse_output_dir: <output_dir>/loop/iter_1/output`. The Snakefile drops a stage's rules only when that reuse tree is present in the merged config, which is why iteration 1 and every non-loop invocation still build the whole pipeline. `loop.reuse_output_dir` is driver-owned; the driver rejects a run config that sets it, since it would freeze stages already in iteration 1.
 
-**Frozen Stage 1.** Freezing the equilibrium deliberately drops the boundary half of the feedback. Every iteration reseeds its `s1_input` from the base inputs, holding the geometry fixed while the profiles evolve. Post-processing still writes the evolved boundary under `stage5_post_processing/` for inspection; it is simply not consumed.
+**Frozen Stage 1.** When Stage 1 is frozen, the loop does not feed pressure back to the equilibrium. Each iteration copies its `s1_input` from the base inputs. The geometry stays fixed while the profiles evolve. Post-processing copies the unchanged Stage 1 input into its feedback file. It logs that it skipped pressure export. This also applies in iteration 1. The initial equilibrium solve still runs.
 
 **Provenance.** The `profiles_source: prescribed` override is emitted only for the stages that rerun, so a frozen Stage 3 or 4 keeps recording the `analytical` source its iteration 1 run actually used.
 
@@ -572,7 +616,7 @@ Each iteration runs under its own `outputs/<run>/loop/iter_N/`: `input/` holds t
 outputs/<run>/loop/iter_N/
 ├── input/                              # seeded each pass (run config + boundary + Stage 3/4/5 configs)
 │   ├── config.yaml
-│   ├── vmec_input.<run>                # boundary that fed this pass (base on iter 1, previous fit after)
+│   ├── vmec_input.<run>                # boundary that fed this pass (base on iter 1, previous pressure feedback after)
 │   ├── sfincs_input.<run>
 │   ├── <run>.toml
 │   ├── common_input.toml               # shared Stage 3/4/5 config (base on iter 1, previous prescribed profiles after)
