@@ -11,7 +11,7 @@ headline numbers ($P_\text{fus}$, $Q$).
 solver).  `Trinity3D` is the traditional alternative with mature `GX`+`SFINCS`
 coupling.
 
-**Position in pipeline:** Receives neoclassical transport data from Stage 3 (`sfincs_jax`),
+**Position in pipeline:** Receives neoclassical transport data from Stage 3 (`DKX`),
 turbulent fluxes from Stage 4 (`GKX`), and geometry from Stage 1/2.
 Produces the forward-pass output: updated $n(r)$, $T(r)$, $E_r(r)$,
 $P_\text{fus}$, $Q$.
@@ -275,8 +275,7 @@ Reference: `stellarator_workflow.tex`, Sections 4.8--4.9.
 
 ## Scripts & Workflows
 
-> [!TODO]
-> A reference run script for `NEOPAX` will be added once the Stage 3 → Stage 5 handoff via `sfincs_jax` is designed.
+The `stage-5-neopax` Pixi task reads `common_input.toml`. The neoclassical model reads Stage 3's aggregated `dkx_flux_profiles.h5`. When migrating a run, update the model's input filename together with the Stage 3 output path.
 
 See `docs/mvp-pipeline.md` for full I/O details.
 
