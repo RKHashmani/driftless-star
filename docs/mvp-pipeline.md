@@ -179,6 +179,8 @@ The scan uses the quick-run namelist and `common_input.toml` by default. It solv
 
 The direct task's `--equilibrium-file` and the scan's `--wout-path` both override the namelist `equilibriumFile`. The scan uses the Boozer output for NEOPAX's analytical profile radius. SFINCS Fortran continues to read `equilibriumFile` from its namelist.
 
+Set `stage3.dkx.response_mode` to `fd_gradients` to add density and temperature perturbation siblings. The default `none` runs baseline fluxes only. The [gradient-response specification](stage3-neoclassical/spec.md#optional-gradient-responses) describes the species selections and step controls.
+
 The supported controls include `--cores-per-run`, `--max-parallel`, and GPU selection. See the [Stage 3 spec](stage3-neoclassical/spec.md#output-specification) for cache and contract details.
 
 
@@ -303,7 +305,7 @@ Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stag
 
 Stages 3 and 4 do not run as single jobs. Each expands into three rules that fan one Snakemake job out per flux surface:
 
-1. **`checkpoint stageN_prepare`** -- reads the stage config plus its upstream geometry (both stages take the Stage 1 wout and the Stage 2 boozmn, the latter for the `R00` that fixes NEOPAX's minor radius), then writes `manifest.json` at the stage directory enumerating the surfaces, plus each surface's inputs under `runs/<surf>/` (`input.namelist` + `payload.json` for Stage 3; the runtime `input.toml` + geometry `*.eik.nc` for Stage 4). Surface directory basenames look like `rho_012_r0p4898`. When the Stage 4 config sets `response_mode: fd_gradients`, each base surface directory gains perturbed sibling directories suffixed `_fd_n_<species>` (density-gradient channel) and `_fd_t_<species>` (temperature-gradient channel), one per configured channel-species pair, each a full run directory that fans out as its own `stage4_run_one` job. Stage 3 has no perturbed variants.
+1. **`checkpoint stageN_prepare`** reads the config and upstream geometry. Both stages use the Stage 1 wout and Stage 2 boozmn. The boozmn value `R00` sets NEOPAX's minor radius. The checkpoint writes `manifest.json`. It writes inputs under `runs/<surf>/`. Stage 3 writes `input.namelist` and `payload.json`. Stage 4 writes runtime `input.toml` and geometry `*.eik.nc`. Run directory names look like `rho_012_r0p4898`. When either `stage3.dkx` or `stage4.gkx` sets `response_mode: fd_gradients`, each baseline gets sibling runs with names that end in `_fd_n_<species>` or `_fd_t_<species>`. Each selected pair of channel and species adds a complete run directory and its own `stageN_run_one` job. With `N` radii and `P` selected pairs, the stage schedules `N * (1 + P)` jobs.
 2. **`rule stageN_run_one`** -- one job and one container per surface. Stage 3 solves the surface and writes `runs/<surf>/result.json` (and `sfincsOutput.h5`); Stage 4 evolves it and writes `runs/<surf>/run.diagnostics.csv`.
 3. **`rule stageN_collect`** -- reduces every per-surface output into the stage's declared HDF5 (`dkx_flux_profiles.h5` / `neopax_fluxes.h5`).
 

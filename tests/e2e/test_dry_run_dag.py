@@ -499,3 +499,26 @@ def test_profile_parameter_settings_survive_loop_override(tmp_path: Path) -> Non
     for value in ("--profiles-source prescribed", "--beta-source profiles",
                   "--collisionality-source profiles", "--collisionality-scaling-factor 0.25"):
         assert value in command
+
+
+def test_dkx_response_manifest_schedules_every_sibling(tmp_path: Path) -> None:
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    paths = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/out")
+    for key in ("s1_output", "s2_output"):
+        artifact = Path(paths[key])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("")
+    manifest = Path(paths["stage3_manifest"])
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    surfaces = [
+        f"rho_{idx:03d}_r{rho}{suffix}"
+        for idx, rho in [(1, "0p2500"), (2, "0p5000")]
+        for suffix in ("", "_fd_n_D", "_fd_t_D")
+    ]
+    manifest.write_text(json.dumps({"runs": [{"run_subdir": surface} for surface in surfaces]}))
+    result = _dry_run(tmp_path, targets=[paths["s3_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert output.count("rule stage3_run_one:") == len(surfaces), output
+    for surface in surfaces:
+        assert f"{surface}/result.json" in output, output

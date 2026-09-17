@@ -72,6 +72,24 @@ stage3:
     # rho_max: 0.9            # upper edge of the rho window
     # rho_indices: "1,5,10"   # comma-separated explicit indices instead of the full grid
 
+    # --- Neoclassical response (perturbed fluxes) ---
+    # response_mode `fd_gradients` adds one perturbed sibling run per listed (channel,
+    # species) pair per flux surface. N surfaces and P distinct pairs give N * (1 + P)
+    # Stage 3 jobs. `none` (or leaving the key unset) runs baseline fluxes only.
+    # response_mode: none
+    # Species to perturb per channel are comma-separated quoted names drawn from the
+    # configured species (e, D, T). Matching ignores case and keeps configured spelling.
+    # Repeated names are removed per channel. Unknown names cause preparation to fail.
+    # Both lists default to empty. fd_gradients requires at least one selected species.
+    # perturb_density_species: "D"       # density-gradient channel
+    # perturb_temperature_species: "D"   # temperature-gradient channel
+    # Perturbation parameters default to 0.5 under fd_gradients mode when left unset.
+    # Step magnitude is max(dkap_<channel>, perturb_rel_step * abs(kappa)).
+    # Density steps are negative and preserve pressure gradient. Temperature steps are positive.
+    # dkap_density: 0.5
+    # dkap_temperature: 0.5
+    # perturb_rel_step: 0.5
+
     # --- Resolution ---
     ntheta: 5
     nzeta: 11

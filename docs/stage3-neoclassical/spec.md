@@ -307,10 +307,29 @@ The definitions below are for default values of 'nu_n', 'Delta' and 'alpha'
 > [!TODO]
 > See [I/O Validation section](../guide.md#io-validation).
 
+#### Optional gradient responses
+
+Set the following controls under `stage3.dkx` in `config.yaml`. The command line accepts the same names with hyphens, such as `--response-mode fd_gradients`.
+
+```yaml
+stage3:
+  dkx:
+    response_mode: fd_gradients
+    perturb_density_species: "D,e"
+    perturb_temperature_species: "D,e"
+    dkap_density: 0.5
+    dkap_temperature: 0.5
+    perturb_rel_step: 0.5
+```
+
+`response_mode` defaults to `none`. Species selections default to empty. Step controls default to `0.5`. In `fd_gradients` mode, preparation matches names without regard to case and stores the spelling from `[species].names`, so selecting `d` stores `D` when the input species is `D`. Within each channel, it keeps only the first occurrence of each name. Preparation rejects unknown names and input names that differ only by case. Selected names must match `\w+` for scheduling. Select at least one species. Each radius gets a baseline and siblings ending in `_fd_n_<species>` or `_fd_t_<species>`.
+
+The normalized gradients are `kappa_n = -(dn/d(rho))/n` and `kappa_T = -(dT/d(rho))/T`. The density channel uses `delta = -max(dkap_density, perturb_rel_step * abs(kappa_n))`. It adds `delta` to `kappa_n`. It subtracts the same value from `kappa_T` to preserve the species pressure gradient. The temperature channel uses `delta = max(dkap_temperature, perturb_rel_step * abs(kappa_T))`. It changes only `kappa_T`. The writer converts these gradients back to `dNHatdrNs` and `dTHatdrNs` per unit `rho`. Local density, temperature, geometry and `Er` stay fixed. The gradients of all other species stay fixed. In `fd_gradients` mode, step controls must be finite and nonnegative, and effective steps must be finite and nonzero.
+
 ### Output Specification
 
 
-The Snakemake forward pass runs the `DKX` radial scan as a per-surface fan-out (`stage3_prepare` checkpoint, one `stage3_run_one` job per flux surface, then `stage3_collect`; see [Per-surface fan-out](../mvp-pipeline.md#per-surface-fan-out-stages-3-and-4)). It produces one aggregated handoff file plus a per-surface run tree.
+The Snakemake forward pass runs the `DKX` radial scan through the `stage3_prepare` checkpoint, one `stage3_run_one` job per baseline or perturbation, and `stage3_collect`. It produces one aggregated handoff file plus a per-surface run tree. See [Per-surface fan-out](../mvp-pipeline.md#per-surface-fan-out-stages-3-and-4).
 
 The forward pass supplies flux profiles versus radius to `NEOPAX` (Stage 5) in the HDF5 file `dkx_flux_profiles.h5`. The `collect` step builds this file from every per-surface `result.json`. The root contract validator `validate_dkx_flux` in `src/io_contracts.py` checks the following schema:
 
@@ -326,6 +345,26 @@ The forward pass supplies flux profiles versus radius to `NEOPAX` (Stage 5) in t
 
 The validator requires finite, strictly increasing radial coordinates, equal `r` and `rHat`, consistent species and radius dimensions, and finite flux values. If `axis_zero_padded` is true, the first radius and flux column must be zero. The standalone scan and `collect` accept `--output` for a custom aggregate path. Without this option, the command writes the file under `--output-dir`.
 
+**Gradient-response datasets**
+
+Response mode keeps baseline `Gamma`, `Q` and `Upar` on a unique radial axis. It adds the following datasets. `P` counts pairs of channel and input species. `S` counts output species. `R` counts radii, including any synthetic axis.
+
+| Dataset | Shape | Meaning |
+| --- | --- | --- |
+| `Gamma_perturbed`, `Q_perturbed` | `(P, S, R)` | Full perturbed fluxes in baseline units |
+| `perturb_delta` | `(P, R)` | Signed normalized-gradient increment |
+| `perturb_present` | `(P, R)` | Boolean mask, true where a perturbation was measured |
+| `response_label` | `(P,)` | `density_gradient` or `temperature_gradient` |
+| `perturb_species` | `(P,)` | Name of the perturbed input species |
+
+Pairs follow the density species list, then the temperature species list. Output species follow `species_names`. Compute `(F_perturbed - F_base)/delta` only where `perturb_present` is true. The density response includes the compensating temperature-gradient change. At a synthetic axis, response fluxes and increments are zero. The writer sets `perturb_present = false` there. The writer exports no `Upar` response. Baseline mode omits these six datasets.
+
+The collector reads fluxes from `result.json` and signed steps from the manifest, without reading namelists. Existing scans must run `prepare` with this version before collection, which regenerates the manifest and reuses matching completed results.
+
+The `response_note` attribute describes the response convention when these datasets are present. The baseline contract validator accepts extra datasets but does not validate the response schema.
+
+The writer keeps `r = rHat`. It stores `rho` separately. [NEOPAX compatibility work](../potential_issues.md#stage-5----transport) covers the gradient basis and radial grid.
+
 Root attributes
 
 - `axis_zero_padded` (bool, **required** by the contract): the scan drops the magnetic-axis (`rho = 0`) surface, so when no aggregated surface sits at `rho = 0` the `collect` step prepends a zero-flux `rho = 0` column and sets this flag `true`.
@@ -334,7 +373,9 @@ Root attributes
 - Unit / convention notes: `Upar_note`, `normalization_note`, `radius_note` (how `Gamma`/`Q`/`Upar` are converted to NEOPAX units and which coordinate `r`/`rHat` carries).
 - `solver_name`, `solver_version`, `solver_revision`, and `wout_sha256` identify the installed solver and equilibrium content.
 
-**Per-surface run tree** (under `outputs/<run>/stage3_neoclassical/`): `manifest.json` at the stage directory records the surfaces and provenance the `collect` step reduces over; `runs/rho_*/` holds one directory per surface (basenames like `rho_012_r0p4898`), each with `input.namelist` (patched per surface), `payload.json` (worker inputs), `sfincsOutput.h5` (native per-surface solver output), and `result.json` (the extracted fluxes `collect` reads).
+**Per-surface run tree** under `outputs/<run>/stage3_neoclassical/`. The stage's `manifest.json` records the runs and provenance for collection. Each surface has a baseline directory such as `runs/rho_012_r0p4898/`, plus a directory for each selected perturbation with an `_fd_n_<species>` or `_fd_t_<species>` suffix. Each directory contains `input.namelist`, `payload.json`, native `sfincsOutput.h5`, and extracted `result.json`.
+
+Benchmark repeats and warmup apply to baseline runs only. Each perturbation is solved once because collection reports baseline timings only.
 
 Preparation must run in the DKX stage environment. It reads the installed DKX metadata. It reuses a result only when the generated namelist, installed DKX identity, equilibrium digest, and surface data agree. If the Git revision or WOUT digest is unavailable, preparation reports why reuse is disabled. The WOUT path can come from `--wout-path` or the common configuration. Preparation removes an invalid `result.json` so Snakemake schedules the surface again. On each rerun, the worker clears its completion file before solving. It writes a replacement only after a successful solve and diagnostic validation. Collection rejects missing or incompatible results before opening the aggregate destination.
 
