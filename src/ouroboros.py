@@ -143,7 +143,7 @@ def _write_loop_overrides(
         )
     else:
         text = ""
-    for stage, section in (("stage3", "sfincs_jax"), ("stage4", "gkx")):
+    for stage, section in (("stage3", "dkx"), ("stage4", "gkx")):
         if flags[stage]:
             text += f"{stage}:\n  {section}:\n    profiles_source: prescribed\n"
     if frozen:

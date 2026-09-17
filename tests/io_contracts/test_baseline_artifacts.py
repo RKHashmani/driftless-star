@@ -30,7 +30,7 @@ import pytest
 from src.io_contracts import (
     validate_boozmn,
     validate_neopax_fluxes,
-    validate_sfincs_flux,
+    validate_dkx_flux,
     validate_transport_solution,
     validate_wout,
 )
@@ -44,7 +44,7 @@ _CONFIG_PATH = REPO_ROOT / "inputs/quick_run/config.yaml"
 _ARTIFACT_VALIDATORS: tuple[tuple[str, Callable[[Path], None]], ...] = (
     ("s1_output", validate_wout),
     ("s2_output", validate_boozmn),
-    ("s3_output", validate_sfincs_flux),
+    ("s3_output", validate_dkx_flux),
     ("s4_output", validate_neopax_fluxes),
     ("s5_output", validate_transport_solution),
 )

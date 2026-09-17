@@ -22,7 +22,7 @@ filenames:
   s1_output: wout_{run_name}.nc
   s2_output: boozmn_{run_name}.nc
   s3_config: sfincs_input.{run_name}   # Stage 3 SFINCS namelist
-  s3_output: sfincs_jax_flux_profiles.h5
+  s3_output: dkx_flux_profiles.h5
   s4_config: "{run_name}.toml"         # Stage 4 GKX template
   s4_output: neopax_fluxes.h5
   s5_config: common_input.toml         # shared by Stages 3, 4, 5
@@ -46,10 +46,10 @@ loop:
     stage4: true
     stage5: true
 
-# Stage 3 SFINCS (sfincs_jax) radial scan.
+# Stage 3 DKX radial scan.
 # Surface-level concurrency is controlled by `snakemake --cores`.
 stage3:
-  sfincs_jax:
+  dkx:
     # --- Profile source ---
     # Options include:
     # "analytical": built from the analytical parameters in common_input.toml [profiles],

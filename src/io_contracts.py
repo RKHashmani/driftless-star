@@ -350,22 +350,33 @@ def validate_transport_solution(path: Path | str) -> None:
     _raise_if(_check_transport_solution(data), f"{path} violates the transport_solution.h5 contract")
 
 
-# sfincs_jax_flux_profiles.h5 ------------------------------------------------------------
+# dkx_flux_profiles.h5 ------------------------------------------------------------
 
-_SFINCS_FIELDS = ("r", "rHat", "rho", "Gamma", "Q", "Upar", "species_names")
+_DKX_FIELDS = ("r", "rHat", "rho", "Gamma", "Q", "Upar", "species_names")
 
 
-def _check_sfincs_flux(data: dict[str, np.ndarray | None], attrs: dict[str, Any]) -> list[str]:
-    """Check the Stage 3 neoclassical flux profiles written by the sfincs radial scan."""
+def _check_dkx_flux(data: dict[str, np.ndarray | None], attrs: dict[str, Any]) -> list[str]:
+    """Check Stage 3 neoclassical profiles against the radius grid NEOPAX reads."""
     problems: list[str] = []
 
     n_radii = _check_rho(data.get("rho"), problems)
+    if n_radii is not None and n_radii < 2:
+        problems.append("Stage 3 flux profiles need at least two radii for interpolation")
 
     for name in ("r", "rHat"):
         arr = data.get(name)
         if _require(arr, name, problems):
             _check_1d(arr, name, n_radii, problems)
             _finite(arr, name, problems)
+
+    for name in ("r", "rHat", "rho"):
+        arr = data.get(name)
+        if arr is not None and arr.ndim == 1 and (np.any(arr < 0) or np.any(np.diff(arr) <= 0)):
+            problems.append(f"'{name}' must be nonnegative and increase strictly outward")
+
+    r, r_hat = data.get("r"), data.get("rHat")
+    if r is not None and r_hat is not None and not np.array_equal(r, r_hat):
+        problems.append("'r' must match 'rHat'")
 
     n_species = _check_species_names(data.get("species_names"), "species_names", problems)
 
@@ -374,14 +385,26 @@ def _check_sfincs_flux(data: dict[str, np.ndarray | None], attrs: dict[str, Any]
         if _require(arr, name, problems):
             _check_flux_2d(arr, name, n_species, n_radii, problems)
 
+    padded = attrs.get("axis_zero_padded")
     if "axis_zero_padded" not in attrs:
         problems.append("missing required root attribute 'axis_zero_padded'")
+    elif not isinstance(padded, (bool, np.bool_)):
+        problems.append("'axis_zero_padded' must be Boolean")
+    elif padded:
+        for name in ("r", "rHat", "rho"):
+            arr = data.get(name)
+            if arr is not None and arr.ndim == 1 and arr.size and arr[0] != 0:
+                problems.append(f"axis padding requires '{name}' to start at zero")
+        for name in ("Gamma", "Q", "Upar"):
+            arr = data.get(name)
+            if arr is not None and arr.ndim == 2 and arr.shape[1] and np.any(arr[:, 0] != 0):
+                problems.append(f"axis padding requires '{name}' to start with zero flux")
 
     return problems
 
 
-def validate_sfincs_flux(path: Path | str) -> None:
-    """Validate a ``sfincs_jax_flux_profiles.h5`` against the Stage 3 flux contract.
+def validate_dkx_flux(path: Path | str) -> None:
+    """Validate a ``dkx_flux_profiles.h5`` against the Stage 3 flux contract.
 
     Raises
     ------
@@ -391,9 +414,9 @@ def validate_sfincs_flux(path: Path | str) -> None:
     import h5py
 
     with h5py.File(path, "r") as f:
-        data = {k: (np.asarray(f[k][()]) if k in f else None) for k in _SFINCS_FIELDS}
+        data = {k: (np.asarray(f[k][()]) if k in f else None) for k in _DKX_FIELDS}
         attrs = dict(f.attrs)
-    _raise_if(_check_sfincs_flux(data, attrs), f"{path} violates the sfincs_jax_flux_profiles.h5 contract")
+    _raise_if(_check_dkx_flux(data, attrs), f"{path} violates the dkx_flux_profiles.h5 contract")
 
 
 # neopax_fluxes.h5 -----------------------------------------------------------------------

@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Run a radial sfincs_jax flux scan from NEOPAX-style profile inputs.
+"""Run a radial dkx flux scan from NEOPAX-style profile inputs.
 
-This script is a first-step bridge between NEOPAX profile definitions/outputs and
-sfincs_jax. It:
+This script connects NEOPAX profile definitions and outputs to DKX. It:
 
 1. reads a NEOPAX ``transport_solution.h5`` file, analytical profile parameters
    from the NEOPAX TOML, or prescribed profile arrays from that TOML,
 2. extracts one saved time slice, defaulting to the final one, when using
    ``transport_h5`` profiles,
-3. builds one local sfincs_jax run per selected radial point,
+3. builds one local dkx run per selected radial point,
 4. launches those runs in parallel on CPUs or pinned GPUs,
 5. collects particle flux, heat flux, and parallel-flow diagnostics,
 6. writes an HDF5 profile file with datasets ``r``, ``Gamma``, ``Q``, and
    ``Upar`` that can be read by NEOPAX's ``FluxesRFileTransportModel``.
 7. optionally writes PNG summary plots for ``Gamma``, ``Q``, and ``Upar``.
 
-Default sfincs_jax resolution overrides used by this bridge (quickrun smoke test):
+Default dkx resolution overrides used by this bridge (quickrun smoke test):
 - ``Ntheta = 5``
 - ``Nzeta = 11``
 - ``Nxi = 12``
@@ -23,17 +22,17 @@ Default sfincs_jax resolution overrides used by this bridge (quickrun smoke test
 - ``Nx = 4``
 - ``solverTolerance = 1e-6``
 
-Important note on normalization:
-The written ``Gamma`` and ``Q`` values are taken from sfincs_jax's
-SFINCS-style output fields, preferring the ``*_rHat`` variants when available.
-This makes the bridge practical for workflow prototyping, but exact
-normalization against NEOPAX's native flux units should still be verified
-carefully before treating the result as a strict physical replacement.
+The script requires DKX's ``particleFlux_vm_rHat``, ``heatFlux_vm_rHat``,
+``FSABFlow``, ``rHat``, and ``B0OverBBar`` diagnostics.
+It uses the final iteration for each species.
+It applies the existing conversions to NEOPAX units.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+from importlib.metadata import distribution
 import json
 import os
 from pathlib import Path
@@ -79,7 +78,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 STAGES_DIR = SCRIPT_DIR.parent
 
 DEFAULT_COMMON_CONFIG = STAGES_DIR.parent / "inputs" / "quick_run" / "common_input.toml"
-DEFAULT_SFINCS_TEMPLATE = STAGES_DIR.parent / "inputs" / "quick_run" / "sfincs_input.HSX_vacuum_ns201_quickrun"
+DEFAULT_DKX_TEMPLATE = STAGES_DIR.parent / "inputs" / "quick_run" / "sfincs_input.HSX_vacuum_ns201_quickrun"
 DEFAULT_OUTPUT_DIR = STAGES_DIR.parent / "outputs" / "quick_run" / "stage3_neoclassical"
 
 
@@ -152,7 +151,7 @@ def _choose_radius_indices(
                 raise IndexError(f"rho index {idx} out of range [0, {rho.size - 1}]")
         return idxs
 
-    # By default, skip the magnetic axis point. A local sfincs_jax solve at
+    # By default, skip the magnetic axis point. A local dkx solve at
     # rho=0 is usually not the most useful first-pass transport postprocessing
     # target, and users can still include it explicitly via --rho-indices.
     mask = np.ones_like(rho, dtype=bool)
@@ -224,8 +223,20 @@ def _drop_group_key(*, text: str, group: str, key: str) -> str:
     end_pos = start.end() + end.start()
     group_txt = text[start.end() : end_pos]
 
-    pat = re.compile(rf"(?im)^[ \t]*{re.escape(key)}[ \t]*=[^!\n\r]*(?:![^\n\r]*)?[\r]?\n?")
-    group_txt2 = pat.sub("", group_txt)
+    # Locate assignments outside comments and strings. Values may continue onto
+    # another line or share a line with the next assignment.
+    masked = re.sub(
+        r"'[^']*(?:''[^']*)*'|\"[^\"]*(?:\"\"[^\"]*)*\"|![^\n\r]*",
+        lambda match: " " * len(match.group()),
+        group_txt,
+    )
+    assignments = list(re.finditer(r"\b([A-Za-z_]\w*)\s*(?:\([^)]*\)\s*)?=", masked))
+    group_txt2 = group_txt
+    for index in range(len(assignments) - 1, -1, -1):
+        assignment = assignments[index]
+        if assignment.group(1).lower() == key.lower():
+            stop = assignments[index + 1].start() if index + 1 < len(assignments) else len(group_txt)
+            group_txt2 = group_txt2[:assignment.start()] + group_txt2[stop:]
     return text[: start.end()] + group_txt2 + text[end_pos:]
 
 
@@ -251,7 +262,7 @@ def _prepare_input_text(
     text = template_text
     text = _patch_group_value(text=text, group="general", key="RHSMode", value=1)
     text = _patch_group_value(text=text, group="geometryParameters", key="inputRadialCoordinate", value=3)
-    # Let sfincs_jax infer gradient coordinates separately:
+    # Let dkx infer gradient coordinates separately:
     # species from dNHatdrNs/dTHatdrNs -> mode 3, Phi from Er -> mode 4.
     text = _drop_group_key(text=text, group="geometryParameters", key="inputRadialCoordinateForGradients")
     text = _patch_group_value(text=text, group="geometryParameters", key="rN_wish", value=float(rho[radius_index]))
@@ -280,6 +291,13 @@ def _prepare_input_text(
         key="THats",
         value=temperature[:, radius_index],
     )
+    # DKX prefers rHat, psiHat, and psiN entries over rN. Remove template
+    # gradients, including indexed entries, before writing the profile values.
+    for field in ("N", "T"):
+        for coordinate in ("psiHat", "psiN", "rHat", "rN"):
+            text = _drop_group_key(
+                text=text, group="speciesParameters", key=f"d{field}Hatd{coordinate}s"
+            )
     text = _patch_group_value(
         text=text,
         group="speciesParameters",
@@ -344,41 +362,34 @@ def _infer_booz_path(config_path: Path, cfg: dict[str, Any], explicit: str | Non
 
 def _last_species_vector(arr: np.ndarray, n_species: int) -> np.ndarray:
     data = np.asarray(arr, dtype=np.float64)
+    if data.ndim == 2 and data.shape[1] > 0:
+        data = data[:, -1]
     if data.ndim == 1:
         if data.shape[0] != n_species:
             raise ValueError(f"Expected {n_species} species values, got shape {data.shape}")
+        if not np.all(np.isfinite(data)):
+            raise ValueError("DKX final diagnostics contain non-finite values.")
         return data
-    if data.ndim == 2:
-        if data.shape[0] == n_species:
-            return data[:, -1]
-        if data.shape[1] == n_species:
-            return data[-1, :]
     raise ValueError(f"Unsupported diagnostic shape {data.shape} for n_species={n_species}")
 
 
 def _last_scalar(arr: np.ndarray) -> float:
     data = np.asarray(arr, dtype=np.float64)
-    if data.ndim == 0:
-        return float(data)
-    return float(np.ravel(data)[-1])
+    if data.size != 1 or not np.all(np.isfinite(data)):
+        raise ValueError("Expected one finite DKX diagnostic value.")
+    return float(data.reshape(-1)[0])
 
 
 def _extract_flux_triplet(
     results: dict[str, Any],
     n_species: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float | None, dict[str, str]]:
-    gamma_key = None
-    q_key = None
-    for key in ("particleFlux_vm_rHat", "particleFlux_vm_rN", "particleFlux_vm_psiHat"):
-        if key in results:
-            gamma_key = key
-            break
-    for key in ("heatFlux_vm_rHat", "heatFlux_vm_rN", "heatFlux_vm_psiHat"):
-        if key in results:
-            q_key = key
-            break
-    if gamma_key is None or q_key is None or "FSABFlow" not in results:
-        raise KeyError("sfincs_jax output is missing required flux/flow diagnostics.")
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, dict[str, str]]:
+    gamma_key = "particleFlux_vm_rHat"
+    q_key = "heatFlux_vm_rHat"
+    required = (gamma_key, q_key, "FSABFlow", "rHat", "B0OverBBar")
+    missing = [key for key in required if key not in results]
+    if missing:
+        raise KeyError(f"DKX output is missing required diagnostics {missing}.")
 
     gamma_hat = _last_species_vector(np.asarray(results[gamma_key]), n_species)
     q_hat = _last_species_vector(np.asarray(results[q_key]), n_species)
@@ -386,7 +397,7 @@ def _extract_flux_triplet(
     q = SFINCS_Q_TO_NEOPAX * q_hat
 
     fsab_flow = _last_species_vector(np.asarray(results["FSABFlow"]), n_species)
-    b0_over_bbar = _last_scalar(np.asarray(results.get("B0OverBBar", 1.0), dtype=np.float64))
+    b0_over_bbar = _last_scalar(np.asarray(results["B0OverBBar"], dtype=np.float64))
     # NTX fixed-field parallel-flow audit bridge:
     # NEOPAX's physical Upar closure matches the SFINCS hat-normalized FSABFlow
     # after restoring the historical factor 2 * B0OverBBar / sqrt(pi).
@@ -399,20 +410,14 @@ def _extract_flux_triplet(
         "Gamma_scale_to_neopax": f"{SFINCS_GAMMA_TO_NEOPAX:.16g}",
         "Q_scale_to_neopax": f"{SFINCS_Q_TO_NEOPAX:.16g}",
         "Upar_bridge": "2*B0OverBBar/sqrt(pi)",
-        "B0OverBBar": f"{b0_over_bbar:.16g}",
     }
-    r_hat = None
-    if "rHat" in results:
-        r_hat = _last_scalar(np.asarray(results["rHat"], dtype=np.float64))
-        meta["rHat"] = f"{r_hat:.16g}"
+    r_hat = _last_scalar(np.asarray(results["rHat"], dtype=np.float64))
     return gamma, q, upar, r_hat, meta
 
 
 def _build_worker_env(args: argparse.Namespace, *, gpu_id: str | None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-    if args.dense_fp_max is not None:
-        env["SFINCS_JAX_RHSMODE1_DENSE_FP_MAX"] = str(int(args.dense_fp_max))
     if str(args.backend).lower() == "gpu":
         # On NVIDIA-backed JAX installs, using the generic "gpu" alias can
         # still let JAX probe other accelerator backends such as ROCm. Force
@@ -427,15 +432,12 @@ def _build_worker_env(args: argparse.Namespace, *, gpu_id: str | None) -> dict[s
         env.pop("JAX_BACKEND_TARGET", None)
         env.pop("ROCM_VISIBLE_DEVICES", None)
         env.pop("HIP_VISIBLE_DEVICES", None)
-        env["SFINCS_JAX_SHARD"] = "0"
-        env["SFINCS_JAX_AUTO_SHARD"] = "0"
-        env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "off"
     else:
         env["JAX_PLATFORMS"] = "cpu"
         env["JAX_PLATFORM_NAME"] = "cpu"
         env["CUDA_VISIBLE_DEVICES"] = ""
         # Some recent JAX/XLA builds reject the legacy CPU-thread flags that older
-        # shells or sfincs_jax opt-in settings may add. Keep other XLA flags, but
+        # shells or dkx opt-in settings may add. Keep other XLA flags, but
         # scrub the unsupported CPU-thread knobs for per-worker CPU launches.
         xla_flags = env.get("XLA_FLAGS", "")
         filtered_xla_flags = " ".join(
@@ -452,7 +454,7 @@ def _build_worker_env(args: argparse.Namespace, *, gpu_id: str | None) -> dict[s
         cores = int(args.cores_per_run)
         threads = max(1, cores)
         if cores > 0:
-            env["SFINCS_JAX_CORES"] = str(cores)
+            env["DKX_CORES"] = str(cores)
         # Pin native thread pools so N parallel workers do not each try to use
         # the whole machine. This matters a lot for medium/heavy CPU scans.
         env["OMP_NUM_THREADS"] = str(threads)
@@ -460,25 +462,41 @@ def _build_worker_env(args: argparse.Namespace, *, gpu_id: str | None) -> dict[s
         env["MKL_NUM_THREADS"] = str(threads)
         env["VECLIB_MAXIMUM_THREADS"] = str(threads)
         env["NUMEXPR_NUM_THREADS"] = str(threads)
-        env.pop("SFINCS_JAX_XLA_THREADS", None)
-        worker_sharding = str(getattr(args, "worker_sharding", "off")).strip().lower()
-        if worker_sharding != "off" and cores > 1:
-            env["SFINCS_JAX_CPU_DEVICES"] = str(cores)
-            env["SFINCS_JAX_SHARD"] = "1"
-            if worker_sharding == "auto":
-                env["SFINCS_JAX_AUTO_SHARD"] = "1"
-                env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "auto"
-            else:
-                env["SFINCS_JAX_AUTO_SHARD"] = "0"
-                env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = worker_sharding
-        else:
-            # Default to process-level parallelism across radii rather than
-            # per-worker multi-device sharding.
-            env.pop("SFINCS_JAX_CPU_DEVICES", None)
-            env["SFINCS_JAX_SHARD"] = "0"
-            env["SFINCS_JAX_AUTO_SHARD"] = "0"
-            env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "off"
     return env
+
+
+def _solver_identity() -> dict[str, str]:
+    """Read the installed solver identity without importing DKX or initializing JAX."""
+    package = distribution("dkx")
+    direct_url = json.loads(package.read_text("direct_url.json") or "{}")
+    return {
+        "name": "dkx",
+        "version": package.version,
+        "revision": direct_url.get("vcs_info", {}).get("commit_id", ""),
+    }
+
+
+def _wout_digest(path: Path | None) -> str | None:
+    """Identify the equilibrium contents used by this scan."""
+    if path is None:
+        return None
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _validate_summary(summary: dict[str, Any], expected: dict[str, Any]) -> None:
+    """Check one completion record against its prepared surface."""
+    for key in ("solver", "wout_sha256", "radius_index", "rho"):
+        if key not in summary or summary[key] != expected[key]:
+            raise ValueError(f"DKX result has a mismatched {key}. Run prepare and solve the surface again.")
+    r_hat = _last_scalar(np.asarray(summary["rHat"], dtype=float))
+    rho = float(summary["rho"])
+    if not np.isfinite(rho) or rho < 0 or r_hat < 0 or (rho == 0) != (r_hat == 0):
+        raise ValueError("DKX result radii must be nonnegative and agree on the magnetic axis.")
+    for key in ("Gamma", "Q", "Upar"):
+        values = np.asarray(summary[key], dtype=float)
+        if values.shape != (expected["n_species"],) or not np.all(np.isfinite(values)):
+            raise ValueError(f"DKX result {key} must contain one finite value per species.")
 
 
 def _run_single_worker_from_payload(payload_path: Path) -> int:
@@ -488,33 +506,40 @@ def _run_single_worker_from_payload(payload_path: Path) -> int:
     input_path = Path(payload["input_path"])
     output_path = Path(payload["output_path"])
     result_json = Path(payload["result_json"])
+    result_json.unlink(missing_ok=True)
     wout_path = payload.get("wout_path")
     n_species = int(payload["n_species"])
     benchmark_repeats = max(0, int(payload.get("benchmark_repeats", 0)))
     benchmark_warmup = max(0, int(payload.get("benchmark_warmup", 0)))
 
-    from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
+    if payload.get("solver") != _solver_identity():
+        raise ValueError("The installed DKX differs from the prepared scan. Run prepare again.")
+    resolved_wout = None if wout_path in (None, "") else Path(wout_path)
+    if payload.get("wout_sha256") != _wout_digest(resolved_wout):
+        raise ValueError("The equilibrium changed after preparation. Run prepare again.")
+
+    from dkx.api import read_output, write_output
 
     solve_count = 1 if benchmark_repeats <= 0 else benchmark_warmup + benchmark_repeats
     elapsed_s: list[float] = []
     for _ in range(solve_count):
         t0 = time.perf_counter()
-        write_sfincs_jax_output_h5(
-            input_namelist=input_path,
-            output_path=output_path,
-            wout_path=None if wout_path in (None, "") else Path(wout_path),
-            compute_transport_matrix=False,
-            compute_solution=True,
+        write_output(
+            input_path,
+            output_path,
+            wout_path=resolved_wout,
             overwrite=True,
-            verbose=bool(payload.get("verbose", False)),
+            emit=print if payload.get("verbose", False) else None,
         )
         elapsed_s.append(time.perf_counter() - t0)
-    results = read_sfincs_h5(output_path)
+    results = read_output(output_path)
     gamma, q, upar, r_hat, meta = _extract_flux_triplet(results, n_species)
     summary = {
+        "solver": payload["solver"],
+        "wout_sha256": payload["wout_sha256"],
         "radius_index": int(payload["radius_index"]),
         "rho": float(payload["rho"]),
-        "rHat": None if r_hat is None else float(r_hat),
+        "rHat": float(r_hat),
         "Gamma": gamma.tolist(),
         "Q": q.tolist(),
         "Upar": upar.tolist(),
@@ -531,6 +556,8 @@ def _run_single_worker_from_payload(payload_path: Path) -> int:
             "warm_mean_s": float(np.mean(warm_runs)) if warm_runs else float("nan"),
             "warm_min_s": float(np.min(warm_runs)) if warm_runs else float("nan"),
         }
+    # Unit conversions can overflow even when native diagnostics are finite.
+    _validate_summary(summary, payload)
     with result_json.open("w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2)
     return 0
@@ -539,16 +566,15 @@ def _run_single_worker_from_payload(payload_path: Path) -> int:
 def _existing_result_is_usable(
     result_json: Path,
     *,
+    expected: dict[str, Any],
     require_benchmark: bool,
 ) -> bool:
-    if not result_json.exists():
+    if not result_json.exists() or not expected["solver"]["revision"] or not expected["wout_sha256"]:
         return False
     try:
         summary = json.loads(result_json.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    required = ("rho", "rHat", "Gamma", "Q", "Upar")
-    if any(key not in summary for key in required):
+        _validate_summary(summary, expected)
+    except (OSError, ValueError, KeyError, TypeError):
         return False
     if require_benchmark and "benchmark" not in summary:
         return False
@@ -583,7 +609,7 @@ def _write_summary_plots(
             ax.plot(rho, values[i], marker="o", linewidth=1.5, markersize=4.0, label=sp.name)
         ax.set_xlabel("rho")
         ax.set_ylabel(label)
-        ax.set_title(f"{label} from sfincs_jax radial scan")
+        ax.set_title(f"{label} from dkx radial scan")
         ax.grid(True, alpha=0.3)
         ax.legend()
         fig.savefig(path, dpi=180)
@@ -745,7 +771,7 @@ def _run_tasks_in_parallel(
                 rho_note = f" rho={rho_value:.4f}" if rho_value is not None else ""
                 gpu_note = f" gpu={worker['gpu_id']}" if worker["gpu_id"] is not None else ""
                 print(
-                    f"[sfincs-scan] launched {completed + len(active)}/{total}:{rho_note}{gpu_note}",
+                    f"[dkx-scan] launched {completed + len(active)}/{total}:{rho_note}{gpu_note}",
                     flush=True,
                 )
                 slot += 1
@@ -767,7 +793,7 @@ def _run_tasks_in_parallel(
                 if code != 0:
                     _cleanup_worker_processes(active)
                     msg = [
-                        f"sfincs_jax worker failed for {label}",
+                        f"dkx worker failed for {label}",
                     ]
                     if gpu_id is not None:
                         msg.append(f"gpu={gpu_id}")
@@ -793,10 +819,10 @@ def _run_tasks_in_parallel(
                     raise RuntimeError("\n".join(msg))
                 if bool(args.verbose_workers) and not stream_output:
                     if stdout.strip():
-                        print(f"[sfincs-worker stdout] {label}\n{stdout.strip()}", flush=True)
+                        print(f"[dkx-worker stdout] {label}\n{stdout.strip()}", flush=True)
                     stderr_to_print = _suppress_benign_worker_stderr(stderr, args)
                     if stderr_to_print.strip():
-                        print(f"[sfincs-worker stderr] {label}\n{stderr_to_print.strip()}", flush=True)
+                        print(f"[dkx-worker stderr] {label}\n{stderr_to_print.strip()}", flush=True)
                 completed += 1
                 rho_value = None
                 if payload_path is not None:
@@ -807,7 +833,7 @@ def _run_tasks_in_parallel(
                         rho_value = None
                 rho_note = f" rho={rho_value:.4f}" if rho_value is not None else ""
                 gpu_note = f" gpu={gpu_id}" if gpu_id is not None else ""
-                print(f"[sfincs-scan] completed {completed}/{total}:{rho_note}{gpu_note}", flush=True)
+                print(f"[dkx-scan] completed {completed}/{total}:{rho_note}{gpu_note}", flush=True)
     except KeyboardInterrupt:
         _cleanup_worker_processes(active)
         raise
@@ -817,7 +843,7 @@ def _run_tasks_in_parallel(
 
 
 def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
-    """Build per-surface sfincs_jax inputs and the scan manifest.
+    """Build per-surface dkx inputs and the scan manifest.
 
     Loads profiles, selects flux surfaces, and writes an ``input.namelist`` plus ``payload.json`` under
     each ``output_dir/runs/<run_subdir>`` directory, then records ``output_dir/manifest.json`` describing
@@ -887,8 +913,17 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
         num_radii=args.num_radii,
     )
 
-    template_path = Path(args.sfincs_template).resolve()
+    template_path = Path(args.dkx_template).resolve()
     template_text = template_path.read_text(encoding="utf-8")
+    solver = _solver_identity()
+    wout_sha256 = _wout_digest(wout_path)
+    if not solver["revision"] or not wout_sha256:
+        missing = []
+        if not solver["revision"]:
+            missing.append("installed DKX Git revision")
+        if not wout_sha256:
+            missing.append("WOUT content digest")
+        print(f"[dkx-scan] result reuse disabled. Missing {' and '.join(missing)}.", flush=True)
 
     output_dir = Path(args.output_dir).resolve()
     run_dir = output_dir / "runs"
@@ -927,16 +962,9 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
                 existing_input_text = input_path.read_text(encoding="utf-8")
             except Exception:
                 existing_input_text = None
-        can_reuse = (
-            existing_input_text == input_text
-            and _existing_result_is_usable(
-                result_json,
-                require_benchmark=bool(int(args.benchmark_repeats) > 0),
-            )
-        )
-        input_path.write_text(input_text, encoding="utf-8")
-
         payload = {
+            "solver": solver,
+            "wout_sha256": wout_sha256,
             "radius_index": int(radius_index),
             "rho": rho_value,
             "input_path": str(input_path),
@@ -948,10 +976,20 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
             "benchmark_repeats": int(args.benchmark_repeats),
             "benchmark_warmup": int(args.benchmark_warmup),
         }
+        can_reuse = (
+            existing_input_text == input_text
+            and _existing_result_is_usable(
+                result_json,
+                expected=payload,
+                require_benchmark=bool(int(args.benchmark_repeats) > 0),
+            )
+        )
+        input_path.write_text(input_text, encoding="utf-8")
         payload_path = surface_dir / "payload.json"
         with payload_path.open("w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
         if not can_reuse:
+            result_json.unlink(missing_ok=True)
             pending_task_payloads.append(payload_path)
         manifest_runs.append(
             {
@@ -966,15 +1004,16 @@ def _prepare(args: argparse.Namespace) -> tuple[dict[str, Any], list[Path]]:
 
     manifest = {
         "schema_version": 1,
+        "solver": solver,
+        "wout_sha256": wout_sha256,
         "profiles_source": str(args.profiles_source),
         "source_transport_solution": None if transport_solution is None else str(transport_solution),
-        "source_sfincs_template": str(template_path),
+        "source_dkx_template": str(template_path),
         "time_index": int(args.time_index),
         "time_value": None if snapshot.time_value is None else float(snapshot.time_value),
         "include_phi1": args.include_phi1,
         "backend": str(args.backend).lower(),
         "max_parallel": int(args.max_parallel),
-        "worker_sharding": str(args.worker_sharding).lower(),
         "benchmark_repeats": int(args.benchmark_repeats),
         "benchmark_warmup": int(args.benchmark_warmup),
         "species_meta": [
@@ -996,13 +1035,13 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
 
     Reads each surface's ``result.json`` (located relative to ``output_dir`` from the manifest run
     entries), stacks the flux arrays, applies the magnetic-axis zero-padding, and writes
-    ``sfincs_jax_flux_profiles.h5``. Provenance attributes are taken from the manifest rather than live
+    ``dkx_flux_profiles.h5``. Provenance attributes are taken from the manifest rather than live
     arguments so this phase can run independently of the process that prepared the scan.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Parsed CLI arguments; only ``output_dir`` and ``plot`` are consumed.
+        Parsed CLI arguments. Collection uses ``output_dir``, ``output``, and ``plot``.
     manifest : dict[str, Any]
         The scan manifest produced by :func:`_prepare`.
 
@@ -1017,6 +1056,8 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
         SpeciesMeta(name=meta["name"], charge=meta["charge"], mass_mp=meta["mass_mp"])
         for meta in manifest["species_meta"]
     ]
+    if not manifest["runs"]:
+        raise ValueError("The DKX manifest has no surfaces to collect.")
 
     rho_out = []
     rhat_out = []
@@ -1029,10 +1070,16 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
         result_json = run_dir / run["run_subdir"] / run["result_json"]
         if not result_json.exists():
             raise FileNotFoundError(
-                f"Missing sfincs_jax worker result for run {run['run_subdir']} at {result_json}. "
+                f"Missing dkx worker result for run {run['run_subdir']} at {result_json}. "
                 "Run the surface before collecting."
             )
         summary = json.loads(result_json.read_text(encoding="utf-8"))
+        _validate_summary(summary, {
+            **run,
+            "solver": manifest["solver"],
+            "wout_sha256": manifest["wout_sha256"],
+            "n_species": len(species),
+        })
         rho_out.append(float(summary["rho"]))
         rhat_value = summary.get("rHat")
         if rhat_value is None:
@@ -1057,7 +1104,8 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
     q_arr = np.stack(q_out, axis=1)
     upar_arr = np.stack(upar_out, axis=1)
     axis_padded = False
-    if rho_arr.size > 0 and not np.any(np.isclose(rho_arr, 0.0)):
+    # NEOPAX evaluates the axis at exactly zero. A positive radius does not cover it.
+    if rho_arr[0] != 0:
         zero_flux = np.zeros((len(species), 1), dtype=np.float64)
         rho_arr = np.concatenate([np.asarray([0.0], dtype=np.float64), rho_arr])
         rhat_arr = np.concatenate([np.asarray([0.0], dtype=np.float64), rhat_arr])
@@ -1066,9 +1114,13 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
         upar_arr = np.concatenate([zero_flux, upar_arr], axis=1)
         axis_padded = True
 
+    if rho_arr.size < 2 or np.any(np.diff(rho_arr) <= 0) or np.any(np.diff(rhat_arr) <= 0):
+        raise ValueError("DKX collection needs at least two strictly increasing radii.")
+
     time_value = manifest["time_value"]
     include_phi1 = manifest["include_phi1"]
-    out_h5 = output_dir / "sfincs_jax_flux_profiles.h5"
+    out_h5 = Path(args.output).resolve() if args.output else output_dir / "dkx_flux_profiles.h5"
+    out_h5.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(out_h5, "w") as f:
         f.create_dataset("r", data=rhat_arr)
         f.create_dataset("rHat", data=rhat_arr)
@@ -1081,30 +1133,36 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
         f.attrs["source_transport_solution"] = (
             "" if manifest["source_transport_solution"] is None else str(manifest["source_transport_solution"])
         )
-        f.attrs["source_sfincs_template"] = str(manifest["source_sfincs_template"])
+        f.attrs["source_dkx_template"] = str(manifest["source_dkx_template"])
         f.attrs["time_index"] = int(manifest["time_index"])
         f.attrs["time_value"] = np.nan if time_value is None else float(time_value)
         f.attrs["backend"] = str(manifest["backend"])
         f.attrs["max_parallel"] = int(manifest["max_parallel"])
-        f.attrs["worker_sharding"] = str(manifest["worker_sharding"])
+        for key, value in manifest["solver"].items():
+            f.attrs[f"solver_{key}"] = value
+        f.attrs["wout_sha256"] = manifest["wout_sha256"] or ""
         f.attrs["include_phi1"] = bool(include_phi1) if include_phi1 is not None else -1
         f.attrs["axis_zero_padded"] = bool(axis_padded)
-        for key, value in raw_meta.items():
+        for key in (
+            "Gamma_key", "Q_key", "Upar_key",
+            "Gamma_scale_to_neopax", "Q_scale_to_neopax", "Upar_bridge",
+        ):
+            value = raw_meta.get(key)
             if value is not None:
                 f.attrs[f"raw_{key}"] = str(value)
         f.attrs["Upar_note"] = (
-            "Upar is derived from sfincs_jax FSABFlow using the NTX fixed-field "
+            "Upar is derived from dkx FSABFlow using the NTX fixed-field "
             "parallel-flow bridge factor 2*B0OverBBar/sqrt(pi)."
         )
         f.attrs["normalization_note"] = (
-            "Gamma is converted from sfincs_jax particleFlux_vm_* using nbar*vbar/Rbar "
+            "Gamma is converted from dkx particleFlux_vm_* using nbar*vbar/Rbar "
             "with nbar=1e20 m^-3, Tbar=1 keV, mbar=mp, Rbar=1 m. "
             "Q is converted from heatFlux_vm_* using (nbar*mbar*vbar^3/Rbar)/e so the written "
             "values match NEOPAX's eV-based physical heat-flux convention. "
             "Upar uses the NTX archive-backed observable bridge rather than a raw FSABFlow alias."
         )
         f.attrs["radius_note"] = (
-            "The saved coordinate r/rHat uses sfincs_jax's rHat output. "
+            "The saved coordinate r/rHat uses dkx's rHat output. "
             "rho is also saved separately from the source NEOPAX transport file."
         )
         if benchmark_rows:
@@ -1136,10 +1194,10 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
         )
 
     if benchmark_rows:
-        print("[sfincs-scan] benchmark summary (same-worker repeated solves):", flush=True)
+        print("[dkx-scan] benchmark summary (same-worker repeated solves):", flush=True)
         for row in benchmark_rows:
             print(
-                "[sfincs-scan] "
+                "[dkx-scan] "
                 f"rho={float(row['rho']):.4f} cold={float(row['cold_run_s']):.3f}s "
                 f"warm_mean={float(row['warm_mean_s']):.3f}s "
                 f"warm_min={float(row['warm_min_s']):.3f}s "
@@ -1170,18 +1228,15 @@ def cmd_main(args: argparse.Namespace) -> int:
     if backend == "gpu":
         placement_note = f"gpu_ids={','.join(gpu_ids)}"
     else:
-        placement_note = (
-            f"cores_per_run={int(args.cores_per_run)} "
-            f"worker_sharding={str(args.worker_sharding).lower()}"
-        )
+        placement_note = f"cores_per_run={int(args.cores_per_run)}"
     print(
-        "[sfincs-scan] "
+        "[dkx-scan] "
         f"selected {total_runs} radii over rho in [{rho_min_val:.4f}, {rho_max_val:.4f}] "
         f"({backend_note}, {parallel_note}, {placement_note})"
     , flush=True)
     if reused_runs:
         print(
-            "[sfincs-scan] "
+            "[dkx-scan] "
             f"reusing {reused_runs}/{total_runs} existing completed runs; "
             f"launching {len(pending_task_payloads)} new workers.",
             flush=True,
@@ -1231,6 +1286,13 @@ def _add_output_dir(p: argparse.ArgumentParser) -> None:
     p.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Output directory for runs and collected fluxes.")
 
 
+def _add_output(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--output", default=None,
+        help="Aggregate output path. Defaults to dkx_flux_profiles.h5 under --output-dir.",
+    )
+
+
 def _add_io_and_shaping(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--common-config",
@@ -1261,9 +1323,9 @@ def _add_io_and_shaping(p: argparse.ArgumentParser) -> None:
         ),
     )
     p.add_argument(
-        "--sfincs-template",
-        default=str(DEFAULT_SFINCS_TEMPLATE),
-        help="Template sfincs_jax input.namelist.",
+        "--dkx-template",
+        default=str(DEFAULT_DKX_TEMPLATE),
+        help="Template dkx input.namelist.",
     )
     _add_output_dir(p)
     p.add_argument("--time-index", type=int, default=-1, help="Time index in transport_solution.h5. Default: final.")
@@ -1271,7 +1333,7 @@ def _add_io_and_shaping(p: argparse.ArgumentParser) -> None:
     p.add_argument("--rho-min", type=float, default=None, help="Minimum rho to include.")
     p.add_argument("--rho-max", type=float, default=None, help="Maximum rho to include.")
     p.add_argument("--num-radii", type=int, default=None, help="Number of radii to sample inside the rho filter.")
-    p.add_argument("--wout-path", default=None, help="Optional VMEC equilibrium override for sfincs_jax.")
+    p.add_argument("--wout-path", default=None, help="Optional VMEC equilibrium override for dkx.")
     p.add_argument(
         "--boozer-path",
         default=None,
@@ -1288,15 +1350,6 @@ def _add_io_and_shaping(p: argparse.ArgumentParser) -> None:
     p.add_argument("--solver-tolerance", type=float, default=1.0e-6, help="Override solverTolerance. Default: 1e-6.")
 
 
-def _add_dense_fp_max(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--dense-fp-max",
-        type=int,
-        default=None,
-        help="Set SFINCS_JAX_RHSMODE1_DENSE_FP_MAX for worker processes.",
-    )
-
-
 def _add_backend(p: argparse.ArgumentParser) -> None:
     p.add_argument("--backend", choices=("cpu", "gpu"), default="cpu", help="Parallel execution backend.")
 
@@ -1306,22 +1359,13 @@ def _add_gpu_ids(p: argparse.ArgumentParser) -> None:
 
 
 def _add_max_parallel(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--max-parallel", type=int, default=8, help="Maximum concurrent sfincs_jax runs.")
+    p.add_argument("--max-parallel", type=int, default=8, help="Maximum concurrent dkx runs.")
 
 
 def _add_cores_per_run(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--cores-per-run", type=int, default=1, help="CPU cores per run for backend=cpu.")
-
-
-def _add_worker_sharding(p: argparse.ArgumentParser) -> None:
     p.add_argument(
-        "--worker-sharding",
-        choices=("off", "auto", "theta", "zeta", "x", "flat"),
-        default="off",
-        help=(
-            "Per-worker sfincs_jax sharding mode for backend=cpu when cores-per-run > 1. "
-            "Default: off."
-        ),
+        "--cores-per-run", type=int, default=1,
+        help="CPU cores per run. Nonpositive values leave DKX's environment or automatic default in control.",
     )
 
 
@@ -1351,13 +1395,13 @@ def _add_verbose_workers(p: argparse.ArgumentParser) -> None:
         "--verbose-workers",
         dest="verbose_workers",
         action="store_true",
-        help="Allow verbose sfincs_jax worker logging.",
+        help="Allow verbose dkx worker logging.",
     )
     p.add_argument(
         "--no-verbose-workers",
         dest="verbose_workers",
         action="store_false",
-        help="Silence sfincs_jax worker logging.",
+        help="Silence dkx worker logging.",
     )
     p.set_defaults(verbose_workers=True)
 
@@ -1372,17 +1416,16 @@ def build_parser() -> argparse.ArgumentParser:
             __doc__
             + "\n\n"
             + "Unless overridden on the command line, this script forces the following "
-            + "sfincs_jax resolution settings (quickrun smoke test): "
+            + "dkx resolution settings (quickrun smoke test): "
             + "Ntheta=5, Nzeta=11, Nxi=12, NL=3, Nx=4, solverTolerance=1e-6."
         )
     )
     _add_io_and_shaping(p)
-    _add_dense_fp_max(p)
+    _add_output(p)
     _add_backend(p)
     _add_gpu_ids(p)
     _add_max_parallel(p)
     _add_cores_per_run(p)
-    _add_worker_sharding(p)
     _add_benchmark(p)
     _add_plot(p)
     _add_verbose_workers(p)
@@ -1391,26 +1434,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = p.add_subparsers(dest="command", required=False)
 
-    prepare = sub.add_parser("prepare", help="Write per-surface sfincs_jax inputs and the scan manifest.")
+    prepare = sub.add_parser("prepare", help="Write per-surface dkx inputs and the scan manifest.")
     _add_io_and_shaping(prepare)
     _add_backend(prepare)
     _add_max_parallel(prepare)
-    _add_worker_sharding(prepare)
     _add_benchmark(prepare)
     _add_verbose_workers(prepare)
     prepare.set_defaults(func=cmd_prepare)
 
     run_one = sub.add_parser("run-one", help=argparse.SUPPRESS)
     run_one.add_argument("--payload", required=True, help="Path to a per-surface payload.json to execute.")
-    _add_dense_fp_max(run_one)
     _add_backend(run_one)
     _add_gpu_ids(run_one)
     _add_cores_per_run(run_one)
-    _add_worker_sharding(run_one)
     run_one.set_defaults(func=cmd_run_one)
 
     collect = sub.add_parser("collect", help="Reduce per-surface results into the flux-profile HDF5.")
     _add_output_dir(collect)
+    _add_output(collect)
     _add_plot(collect)
     collect.set_defaults(func=cmd_collect)
 

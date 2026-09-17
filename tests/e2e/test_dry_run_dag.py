@@ -25,9 +25,10 @@ import subprocess
 from pathlib import Path
 
 import yaml
+import pytest
 
 from src.ouroboros import _write_loop_overrides
-from src.utils import resolve_pipeline_paths
+from src.utils import RESOLVED_COMMON_CONFIG, resolve_pipeline_paths
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FORWARD_RULES = (
@@ -76,16 +77,31 @@ def _write_convergence_override(tmp_path: Path, method: str) -> str:
     return str(path)
 
 
-# This runs the default forward pass and asserts it plans successfully (exit code 0), that every stage rule visible
-# before the checkpoints run is scheduled (including both deferred collect gathers), and that the post-processing rule
-# is NOT scheduled, because the default target is a pure forward pass with no loop-closing step. This catches Snakefile
-# wiring/parse errors without Docker.
-def test_forward_pass_dag_dry_run(tmp_path: Path) -> None:
-    result = _dry_run(tmp_path, targets=[], config_overrides=[], printshellcmds=True)
+# The test plans the forward pass with the default and a custom neoclassical filename.
+# The plan includes every rule visible before the checkpoints run, including the deferred collection rules.
+# The default target excludes the loop's post-processing rule.
+@pytest.mark.parametrize("custom_output", [False, True], ids=["default", "custom-filename"])
+def test_forward_pass_dag_dry_run(tmp_path: Path, custom_output: bool) -> None:
+    extra_configfiles = []
+    filename = "dkx_flux_profiles.h5"
+    if custom_output:
+        filename = "custom_dkx_flux.h5"
+        overrides = tmp_path / "flux-filename.yaml"
+        overrides.write_text(yaml.safe_dump({"filenames": {"s3_output": filename}}))
+        extra_configfiles.append(str(overrides))
+    result = _dry_run(tmp_path, targets=[], config_overrides=[],
+                      extra_configfiles=extra_configfiles, printshellcmds=True)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     stage1_command = next(line for line in output.splitlines() if "run_vmex.py" in line)
     assert all(flag in stage1_command for flag in ("run_vmex.py --input", "--output", "--device cpu")), output
+    stage3_prepare = next(line for line in output.splitlines() if "dkx_radial_scan.py prepare" in line)
+    assert "stage-3-dkx-cpu" in stage3_prepare, output
+    assert "--dkx-template" in stage3_prepare, output
+    stage3_collect = next(line for line in output.splitlines() if "dkx_radial_scan.py collect" in line)
+    assert f"--output {tmp_path}/out/stage3_neoclassical/{filename}" in stage3_collect, output
+    resolved = (tmp_path / "out/stage5_transport" / RESOLVED_COMMON_CONFIG).read_text()
+    assert f'neoclassical_file = "../stage3_neoclassical/{filename}"' in resolved, resolved
     for rule in FORWARD_RULES:
         assert rule in output, f"rule {rule} not scheduled:\n{output}"
     assert "stage5_post_processing" not in output  # rule all is a pure forward pass
@@ -190,6 +206,7 @@ def test_apptainer_runtime_plans_native_gpu_image_and_absolute_binds(tmp_path: P
     assert result.returncode == 0, output
     assert "apptainer run --unsquash --nv" in output, output
     assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-1-vmex-gpu' in output, output
+    assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-3-dkx-gpu' in output, output
     assert f'--bind "{tmp_path}/out:{tmp_path}/out"' in output, output
     assert "docker run" not in output, output
 
@@ -394,7 +411,7 @@ def test_frozen_stage3_keeps_iter1_provenance(tmp_path: Path) -> None:
     assert output.count("--profiles-source prescribed") == 1, output
     assert "--profiles-source analytical" not in output, output
     resolved = Path(paths_out["s5_resolved_config"]).read_text()
-    assert 'neoclassical_file = "../../reuse/stage3_neoclassical/sfincs_jax_flux_profiles.h5"' in resolved, resolved
+    assert 'neoclassical_file = "../../reuse/stage3_neoclassical/dkx_flux_profiles.h5"' in resolved, resolved
 
 
 # The rerun flags are validated at Snakefile parse time even without a reuse tree, so a hand-edited config freezing a
