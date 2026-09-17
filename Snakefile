@@ -204,7 +204,7 @@ if RERUN["stage2"]:
 
 # Per-surface run-directory basenames e.g. rho_012_r0p4898 follow the pattern:
 # zero-padded radial-grid index then the normalized flux-surface radius (e.g. rho=0.4898).
-# Stage 4 fd_gradients mode adds perturbed siblings, e.g. rho_012_r0p4898_fd_n_D.
+# In Stages 3 and 4, fd_gradients adds sibling runs such as rho_012_r0p4898_fd_n_D.
 SURF_PATTERN = r"rho_\d+_r[0-9p]+(?:_fd_[nt]_\w+)?"
 
 if RERUN["stage3"]:
