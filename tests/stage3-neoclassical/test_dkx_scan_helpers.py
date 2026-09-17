@@ -12,18 +12,21 @@ Workers import the solver only when they run.
 
 from __future__ import annotations
 
+import argparse
 import re
 import json
 import sys
 import tomllib
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import h5py
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
+from src.io_contracts import validate_dkx_flux
 from tests.helpers.stage_import import load_stage_module
 
 scan = load_stage_module("stages/stage3-neoclassical/dkx_radial_scan.py")
@@ -377,5 +380,308 @@ def test_collect_checks_results_and_honors_output(tmp_path: Path, problem) -> No
             assert output.attrs["raw_Gamma_key"] == "particleFlux_vm_rHat"
             assert "raw_B0OverBBar" not in output.attrs
             assert "raw_rHat" not in output.attrs
-        from src.io_contracts import validate_dkx_flux
+            assert not {"Gamma_perturbed", "Q_perturbed", "perturb_delta", "perturb_present",
+                        "response_label", "perturb_species"}.intersection(output)
+            assert not {"response_mode", "response_note"}.intersection(output.attrs)
         validate_dkx_flux(destination)
+
+
+def _prepared_responses(tmp_path: Path) -> tuple[argparse.Namespace, dict[str, Any], list[Path]]:
+    args, _, _ = _prepared_scan(tmp_path)
+    args.response_mode = "fd_gradients"
+    args.perturb_density_species = "D,e"
+    args.perturb_temperature_species = "T,D"
+    manifest, pending = scan._prepare(args)
+    return args, manifest, pending
+
+
+@pytest.mark.parametrize("floor, relative", [(0.5, 0.5), (0.01, 2.0)])
+def test_response_gradients_apply_expected_steps(
+    tmp_path: Path, floor: float, relative: float,
+) -> None:
+    args, manifest, _ = _prepared_responses(tmp_path)
+    args.dkap_density = args.dkap_temperature = floor
+    args.perturb_rel_step = relative
+    manifest, _ = scan._prepare(args)
+    state = scan.build_prescribed_face_state(tomllib.loads(PRESCRIBED_TOML), n_species=3)
+    runs_root = Path(args.output_dir) / "runs"
+    assert len(manifest["runs"]) == 10
+    for run in manifest["runs"]:
+        text = (runs_root / run["run_subdir"] / "input.namelist").read_text()
+        idx = run["radius_index"]
+        n, t = state.density[:, idx], state.temperature[:, idx]
+        dn, dt = state.density_grad[:, idx], state.temperature_grad[:, idx]
+        assert_allclose(_namelist_values(text, "nHats"), n)
+        assert_allclose(_namelist_values(text, "THats"), t)
+        assert_allclose(_namelist_values(text, "Er"), state.er[idx])
+        assert_allclose(_namelist_values(text, "rN_wish"), state.rho[idx])
+        actual_n = -_namelist_values(text, "dNHatdrNs") / n
+        actual_t = -_namelist_values(text, "dTHatdrNs") / t
+        expected_n, expected_t = -dn / n, -dt / t
+        if run["response_label"] != "base":
+            si = ["e", "D", "T"].index(run["perturb_species"])
+            delta = run["perturb_delta"]
+            kappa = expected_n[si] if run["response_label"] == "density_gradient" else expected_t[si]
+            assert abs(delta) == max(floor, relative * abs(kappa))
+            if relative == 2.0:
+                assert abs(delta) > floor
+            if run["response_label"] == "density_gradient":
+                assert delta < 0
+                assert_allclose(actual_n + actual_t, expected_n + expected_t)
+                expected_n[si] += delta
+                expected_t[si] -= delta
+                assert_allclose(
+                    _namelist_values(text, "dNHatdrNs") * t + _namelist_values(text, "dTHatdrNs") * n,
+                    dn * t + dt * n,
+                )
+            else:
+                assert delta > 0
+                expected_t[si] += delta
+        assert_allclose(actual_n, expected_n)
+        assert_allclose(actual_t, expected_t)
+
+
+@pytest.mark.parametrize("axis", [False, True])
+def test_response_collection_order_and_axis(tmp_path: Path, axis: bool) -> None:
+    args, manifest, pending = _prepared_responses(tmp_path)
+    if axis:
+        args.rho_indices = "0,1,5"
+        manifest, pending = scan._prepare(args)
+    results = _complete(pending)
+    for i, path in enumerate(results):
+        result = json.loads(path.read_text())
+        result["Gamma"] = [i + 1., i + 2., i + 3.]
+        result["Q"] = [i + 4., i + 5., i + 6.]
+        path.write_text(json.dumps(result))
+    # The collector uses the requested pair order, regardless of manifest order.
+    manifest["runs"].reverse()
+    collect_args = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    scan._collect(collect_args, manifest)
+    validate_dkx_flux(Path(args.output_dir) / "dkx_flux_profiles.h5")
+    with h5py.File(Path(args.output_dir) / "dkx_flux_profiles.h5") as f:
+        assert f["Gamma"].shape == (3, 3)
+        assert f["Gamma_perturbed"].shape == (4, 3, 3)
+        assert list(f["response_label"].asstr()[:]) == ["density_gradient"] * 2 + ["temperature_gradient"] * 2
+        assert list(f["perturb_species"].asstr()[:]) == ["D", "e", "T", "D"]
+        assert_allclose(f["r"][:], f["rho"][:] * 0.8)
+        assert f["perturb_present"].dtype == np.dtype(bool)
+        assert np.all(f["perturb_present"][:, 1:])
+        assert np.all(f["perturb_present"][:, 0] == axis)
+        if not axis:
+            assert_allclose(f["Gamma_perturbed"][:, :, 0], 0)
+            assert_allclose(f["Q_perturbed"][:, :, 0], 0)
+            assert_allclose(f["perturb_delta"][:, 0], 0)
+        for run in manifest["runs"]:
+            result = json.loads((Path(args.output_dir) / "runs" / run["run_subdir"] / "result.json").read_text())
+            ri = np.flatnonzero(f["rho"][:] == run["rho"])[0]
+            if run["response_label"] == "base":
+                assert_allclose(f["Gamma"][:, ri], result["Gamma"])
+            else:
+                pi = [("density_gradient", "D"), ("density_gradient", "e"),
+                      ("temperature_gradient", "T"), ("temperature_gradient", "D")].index(
+                          (run["response_label"], run["perturb_species"]))
+                assert_allclose(f["Gamma_perturbed"][pi, :, ri], result["Gamma"])
+                assert_allclose(f["Q_perturbed"][pi, :, ri], result["Q"])
+                assert f["perturb_delta"][pi, ri] == run["perturb_delta"]
+
+
+@pytest.mark.parametrize("problem", ["missing_result", "rho", "nonfinite"])
+def test_response_collection_rejects_invalid_siblings(tmp_path: Path, problem: str) -> None:
+    args, manifest, pending = _prepared_responses(tmp_path)
+    results = _complete(pending)
+    path = results[1]
+    if problem == "missing_result":
+        path.unlink()
+    else:
+        result = json.loads(path.read_text())
+        if problem == "rho":
+            result["rho"] *= 2
+        else:
+            result["Q"][0] = float("nan")
+        path.write_text(json.dumps(result))
+    collect_args = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    with pytest.raises((ValueError, FileNotFoundError)):
+        scan._collect(collect_args, manifest)
+    assert not (Path(args.output_dir) / "dkx_flux_profiles.h5").exists()
+
+
+def test_response_reuse_is_specific_to_step_and_channel(tmp_path: Path) -> None:
+    args, manifest, pending = _prepared_responses(tmp_path)
+    results = _complete(pending)
+    assert scan._prepare(args)[1] == []
+    args.dkap_density = 2.0
+    updated, pending = scan._prepare(args)
+    assert len(pending) == 4
+    assert all("_fd_n_" in str(path) for path in pending)
+    for before, after in zip(manifest["runs"], updated["runs"]):
+        changed = before["perturb_delta"] != after["perturb_delta"]
+        assert changed == (before["response_label"] == "density_gradient")
+    assert all(result.exists() == ("_fd_n_" not in str(result)) for result in results)
+
+
+def test_response_benchmarks_only_baseline_and_reuses_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, _, _ = _prepared_responses(tmp_path)
+    args.num_radii = 1
+    args.benchmark_repeats, args.benchmark_warmup = 2, 1
+    manifest, pending = scan._prepare(args)
+    calls = []
+    api = ModuleType("dkx.api")
+    api.write_output = lambda *a, **kw: calls.append(a[0].parent.name)
+    api.read_output = lambda path: _native_diagnostics()
+    monkeypatch.setitem(sys.modules, "dkx", ModuleType("dkx"))
+    monkeypatch.setitem(sys.modules, "dkx.api", api)
+    for payload_path in pending:
+        scan._run_single_worker_from_payload(payload_path)
+    for run in manifest["runs"]:
+        assert calls.count(run["run_subdir"]) == (3 if run["response_label"] == "base" else 1)
+    assert scan._prepare(args)[1] == []
+    collect_args = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    scan._collect(collect_args, manifest)
+    with h5py.File(Path(args.output_dir) / "dkx_flux_profiles.h5") as output:
+        assert output["benchmark_rho"].shape == (1,)
+
+
+@pytest.mark.parametrize("key,value", [("dkap_density", -1), ("dkap_temperature", float("nan")),
+                                      ("perturb_rel_step", float("inf")), ("perturb_density_species", "missing")])
+def test_response_rejects_invalid_controls(tmp_path: Path, key: str, value: float | str) -> None:
+    args, _, _ = _prepared_responses(tmp_path)
+    setattr(args, key, value)
+    with pytest.raises(ValueError):
+        scan._prepare(args)
+
+
+def test_response_rejects_zero_step_and_empty_selection(tmp_path: Path) -> None:
+    args, _, _ = _prepared_responses(tmp_path)
+    args.dkap_density = args.perturb_rel_step = 0
+    with pytest.raises(ValueError, match="nonzero"):
+        scan._prepare(args)
+    args.perturb_density_species = args.perturb_temperature_species = ""
+    with pytest.raises(ValueError, match="at least one"):
+        scan._prepare(args)
+
+
+@pytest.mark.parametrize("name", ["He-3", "a/b", "D ion"])
+def test_response_rejects_unschedulable_species(name: str) -> None:
+    args = scan.build_parser().parse_args([
+        "--response-mode", "fd_gradients", "--perturb-density-species", name,
+    ])
+    with pytest.raises(ValueError, match="run directory"):
+        scan._response_settings(args, [scan.SpeciesMeta(name=name, charge=1, mass_mp=3)])
+
+
+@pytest.mark.parametrize("field,value", [("density", 0), ("temperature", -1),
+                                        ("density_grad", np.nan), ("temperature_grad", np.inf)])
+def test_response_rejects_invalid_local_profiles(field: str, value: float) -> None:
+    state = scan.build_prescribed_face_state(tomllib.loads(PRESCRIBED_TOML), n_species=3)
+    getattr(state, field)[1, 1] = value
+    species = scan._parse_species_from_config(tomllib.loads(PRESCRIBED_TOML))
+    args = scan.build_parser().parse_args([
+        "--response-mode", "fd_gradients", "--perturb-density-species", "D",
+    ])
+    with pytest.raises(ValueError, match="species 'D' at rho=0.2.*positive local"):
+        scan._response_states(
+            snapshot=state, species=species, radius_indices=[1], settings=scan._response_settings(args, species),
+        )
+
+
+@pytest.mark.parametrize("names", ['"e", "D", "d"', '"e", "He-3", "none"'])
+def test_baseline_ignores_response_validation(tmp_path: Path, names: str) -> None:
+    args, _, _ = _prepared_scan(tmp_path)
+    Path(args.common_config).write_text(PRESCRIBED_TOML.replace('"e", "D", "T"', names))
+    args.perturb_density_species = "unknown"
+    args.perturb_temperature_species = "also_unknown"
+    args.dkap_density = -1
+    args.dkap_temperature = float("nan")
+    args.perturb_rel_step = float("inf")
+    manifest, pending = scan._prepare(args)
+    assert len(pending) == len(manifest["runs"]) == 2
+    assert all(run["response_label"] == "base" for run in manifest["runs"])
+
+
+def test_response_rejects_case_collisions() -> None:
+    cfg = tomllib.loads(PRESCRIBED_TOML.replace('"e", "D", "T"', '"e", "D", "d"'))
+    args = scan.build_parser().parse_args([
+        "--response-mode", "fd_gradients", "--perturb-density-species", "D",
+    ])
+    with pytest.raises(ValueError, match="unique ignoring case"):
+        scan._response_settings(args, scan._parse_species_from_config(cfg))
+
+
+def test_response_normalizes_and_deduplicates_names(tmp_path: Path) -> None:
+    args, _, _ = _prepared_scan(tmp_path)
+    args.response_mode = "fd_gradients"
+    args.perturb_density_species = " d,D, E,e,, "
+    args.perturb_temperature_species = "t, T,d,D"
+    manifest, pending = scan._prepare(args)
+    assert manifest["perturb_density_species"] == ["D", "e"]
+    assert manifest["perturb_temperature_species"] == ["T", "D"]
+    assert len(pending) == 10
+    assert [run["perturb_species"] for run in manifest["runs"][:5]] == ["none", "D", "e", "T", "D"]
+
+
+def test_response_rejects_overflowing_step_before_writing_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, _, _ = _prepared_scan(tmp_path)
+    state = scan.build_prescribed_face_state(tomllib.loads(PRESCRIBED_TOML), n_species=3)
+    state.density_grad[1, 5] = -2 * state.density[1, 5]
+    monkeypatch.setattr(scan, "build_prescribed_face_state", lambda *a, **kw: state)
+    args.output_dir = str(tmp_path / "overflow")
+    args.response_mode = "fd_gradients"
+    args.perturb_density_species = "D"
+    args.perturb_rel_step = 1e308
+    with np.errstate(over="ignore"), pytest.raises(
+        ValueError, match="species 'D' at rho=1.0.*finite nonzero",
+    ):
+        scan._prepare(args)
+    assert not list(Path(args.output_dir).rglob("input.namelist"))
+    assert not (Path(args.output_dir) / "manifest.json").exists()
+
+
+def test_linear_flux_model_recovers_pressure_preserving_slopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, manifest, pending = _prepared_responses(tmp_path)
+    # Rows identify output species. Columns identify the species whose gradient changes.
+    density_coeff = np.array([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
+    temperature_coeff = np.array([[9., 7., 5.], [8., 6., 4.], [3., 2., 1.]])
+    native_outputs: dict[Path, dict[str, Any]] = {}
+
+    def write_output(input_path: Path, output_path: Path, **kwargs: Any) -> None:
+        text = input_path.read_text()
+        kappa_n = -_namelist_values(text, "dNHatdrNs") / _namelist_values(text, "nHats")
+        kappa_t = -_namelist_values(text, "dTHatdrNs") / _namelist_values(text, "THats")
+        native_outputs[output_path] = {
+            "particleFlux_vm_rHat": (density_coeff @ kappa_n + temperature_coeff @ kappa_t + 10)
+            / scan.SFINCS_GAMMA_TO_NEOPAX,
+            "heatFlux_vm_rHat": (2 * density_coeff @ kappa_n + 3 * temperature_coeff @ kappa_t - 4)
+            / scan.SFINCS_Q_TO_NEOPAX,
+            "FSABFlow": np.ones(3),
+            "rHat": float(_namelist_values(text, "rN_wish")[0]) * 0.8,
+            "B0OverBBar": 1.0,
+        }
+
+    api = ModuleType("dkx.api")
+    api.write_output = write_output
+    api.read_output = native_outputs.__getitem__
+    monkeypatch.setitem(sys.modules, "dkx", ModuleType("dkx"))
+    monkeypatch.setitem(sys.modules, "dkx.api", api)
+    for path in pending:
+        assert scan._run_single_worker_from_payload(path) == 0
+        payload = json.loads(path.read_text())
+        Path(payload["input_path"]).unlink()
+    collect_args = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    assert scan._collect(collect_args, manifest) == 0
+    with h5py.File(Path(args.output_dir) / "dkx_flux_profiles.h5") as output:
+        pairs = zip(output["response_label"].asstr(), output["perturb_species"].asstr())
+        for pi, (channel, name) in enumerate(pairs):
+            si = ["e", "D", "T"].index(name)
+            present = output["perturb_present"][pi]
+            delta = output["perturb_delta"][pi, present]
+            for flux, a, b in (("Gamma", density_coeff, temperature_coeff),
+                               ("Q", 2 * density_coeff, 3 * temperature_coeff)):
+                slope = (output[f"{flux}_perturbed"][pi][:, present] - output[flux][:, present]) / delta
+                expected = a[:, si] - b[:, si] if channel == "density_gradient" else b[:, si]
+                assert_allclose(slope, np.repeat(expected[:, None], present.sum(), axis=1), atol=1e-12)
