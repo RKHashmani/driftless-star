@@ -1,5 +1,6 @@
 # driftless-star pipeline run configuration.
 # CLI overrides `snakemake --config key=value` beat any value here.
+# Stage 3 or 4 is skipped when its flux_model is "none" in common_input.toml.
 
 # Independent of the input_dir/output_dir folder name; describes the physics case.
 run_name: HSX_vacuum_ns201_quickrun

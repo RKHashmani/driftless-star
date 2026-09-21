@@ -2,6 +2,8 @@
 
 ## Overview
 
+The workflow can omit unused flux producers. See [automatic producer skipping](../mvp-pipeline.md#automatic-producer-skipping) for selector, input, and output requirements.
+
 Stage 3 computes neoclassical transport properties from the equilibrium. It has two solver families.
 
 1. **`NEO` / `NEO_JAX`** -- Computes effective ripple (epsilon_eff), a screening/optimization diagnostic. **NOT a transport state variable** -- does not feed into profile evolution. Runs in parallel with the transport code.

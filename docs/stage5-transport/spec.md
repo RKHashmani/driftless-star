@@ -2,6 +2,10 @@
 
 ## Overview
 
+The workflow can omit unused flux producers. See
+[automatic producer skipping](../mvp-pipeline.md#automatic-producer-skipping)
+for selector, input, and output requirements.
+
 Stage 5 evolves radial density and temperature profiles using neoclassical and
 turbulent fluxes, and computes whole-device fusion-power metrics.  This is the
 final stage of the forward pass, producing transport-consistent profiles and the
@@ -11,8 +15,9 @@ headline numbers ($P_\text{fus}$, $Q$).
 solver).  `Trinity3D` is the traditional alternative with mature `GX`+`SFINCS`
 coupling.
 
-**Position in pipeline:** Receives neoclassical transport data from Stage 3 (`DKX`),
-turbulent fluxes from Stage 4 (`GKX`), and geometry from Stage 1/2.
+**Position in pipeline:** Receives neoclassical transport data from enabled
+Stage 3 (`DKX`), turbulent fluxes from enabled Stage 4 (`GKX`), and geometry
+from Stage 1/2.
 Produces the forward-pass output: updated $n(r)$, $T(r)$, $E_r(r)$,
 $P_\text{fus}$, $Q$.
 

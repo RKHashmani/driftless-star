@@ -9,6 +9,10 @@ minimal synthetic config that exercises the ``{run_name}`` templating in isolati
 
 from __future__ import annotations
 
+from copy import deepcopy
+
+import pytest
+
 from src.utils import resolve_pipeline_paths
 
 EXPECTED_KEYS = {
@@ -113,3 +117,25 @@ def test_templating_in_isolation() -> None:
     assert p["s1_output"] == "OUT/stage1_equilibrium/wout_demo.nc"
     assert p["s4_config"] == "IN/demo.toml"
     assert p["s5_signal"] == "OUT/stage5_post_processing/converge_status.json"
+
+
+@pytest.mark.parametrize("key,value", [("s3_config", ""), ("s5_config", 7)])
+def test_required_filenames_are_validated(config, key, value):
+    cfg = deepcopy(config)
+    cfg["filenames"][key] = value
+    with pytest.raises(ValueError, match=key):
+        resolve_pipeline_paths(cfg)
+
+
+def test_missing_required_filename_names_the_entry(config):
+    cfg = deepcopy(config)
+    del cfg["filenames"]["s3_output"]
+    with pytest.raises(ValueError, match="s3_output"):
+        resolve_pipeline_paths(cfg)
+
+
+def test_filenames_must_be_a_mapping(config):
+    cfg = deepcopy(config)
+    cfg["filenames"] = []
+    with pytest.raises(ValueError, match="filenames.*mapping"):
+        resolve_pipeline_paths(cfg)

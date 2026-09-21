@@ -4,10 +4,14 @@ import json
 import posixpath
 from pathlib import Path
 
+from snakemake.logging import logger
+
 from src import stage3_helper, stage4_helper, stage5_helper
 from src.utils.loop import pressure_feedback_command
 from src.utils import (
+    resolve_common_config_path,
     resolve_docker_user,
+    resolve_enabled_stages,
     resolve_gpu_settings,
     resolve_pipeline_paths,
     resolve_rerun_flags,
@@ -25,15 +29,24 @@ if _missing:
     raise ValueError(f"config is missing required key(s): {_missing}.")
 
 RUN_NAME = config["run_name"]
+ENABLED = resolve_enabled_stages(resolve_common_config_path(config))
+for stage in ("stage3", "stage4"):
+    if not ENABLED[stage]:
+        logger.info(f"Stage {stage[-1]} is skipped because its shared flux_model is none.")
+for stage, solver in (("stage3", "dkx"), ("stage4", "gkx")):
+    if ENABLED[stage]:
+        settings = config.get(stage)
+        if not isinstance(settings, dict) or not isinstance(settings.get(solver), dict):
+            raise ValueError(f"config['{stage}']['{solver}'] must be a mapping when {stage} is enabled.")
 
 GPU = resolve_gpu_settings(config)
 DEVICE = GPU.device
 
 # Per-stage rerun flags for the closed loop, validated at parse time so a bad combination fails before any job runs.
 # Freezing a stage means reading its artifacts from an earlier pass, which takes an address from loop.reuse_output_dir.
-# A plain forward pass and the loop's first iteration therefore always run every stage.
-PRESSURE_FEEDBACK_COMMAND = pressure_feedback_command(config)
-RERUN = resolve_rerun_flags(config)
+# A plain forward pass and the loop's first iteration run every enabled stage.
+RERUN = resolve_rerun_flags(config, enabled=ENABLED)
+PRESSURE_FEEDBACK_COMMAND = pressure_feedback_command(config, RERUN)
 REUSE_OUTPUT_DIR = (config.get("loop") or {}).get("reuse_output_dir")
 if REUSE_OUTPUT_DIR is None:
     RERUN = dict.fromkeys(RERUN, True)
@@ -41,8 +54,9 @@ elif not isinstance(REUSE_OUTPUT_DIR, str):
     raise ValueError(f"config['loop']['reuse_output_dir'] must be a path string, got {REUSE_OUTPUT_DIR!r}.")
 elif not RERUN["stage5"]:
     raise ValueError(
-        "config['loop'] freezes every stage while naming a reuse tree, leaving no stage to produce the requested "
-        "target. The loop driver runs a single iteration for an all-frozen config instead of naming a reuse tree."
+        "config['loop'] freezes every enabled stage while naming a reuse tree, "
+        "leaving no stage to produce the requested target. The loop driver runs a single iteration "
+        "for an all-frozen config instead of naming a reuse tree."
     )
 
 CONTAINER_RUNTIME = config.get("container_runtime", "docker")
@@ -126,16 +140,22 @@ shell.executable("bash")
 # does not look successful just because tee exited 0.
 shell.prefix("set -o pipefail; ")
 
-P = resolve_pipeline_paths(config)
+P = resolve_pipeline_paths(config, enabled=ENABLED)
 S1_INPUT  = P["s1_input"]
 S1_OUTPUT = P["s1_output"]
 S2_OUTPUT = P["s2_output"]
-S3_CONFIG = P["s3_config"]
-S3_MANIFEST = P["stage3_manifest"]
-S3_OUTPUT = P["s3_output"]
-S4_CONFIG = P["s4_config"]
-S4_MANIFEST = P["stage4_manifest"]
-S4_OUTPUT = P["s4_output"]
+S3_OUTPUT = P.get("s3_output")
+S4_OUTPUT = P.get("s4_output")
+if ENABLED["stage3"]:
+    S3_CONFIG = P["s3_config"]
+    S3_MANIFEST = P["stage3_manifest"]
+    STAGE3_CFG = config["stage3"]["dkx"]
+if ENABLED["stage4"]:
+    S4_CONFIG = P["s4_config"]
+    S4_MANIFEST = P["stage4_manifest"]
+    STAGE4_CFG = config["stage4"]["gkx"]
+    # Validate the convention even when an enabled Stage 4 is frozen.
+    RADIUS_RELABEL_CONVENTION = stage4_helper.resolve_radius_relabel(config)
 S5_CONFIG = P["s5_config"]
 S5_OUTPUT = P["s5_output"]
 S5_SIGNAL = P["s5_signal"]
@@ -144,20 +164,15 @@ S5_CONFIG_FEEDBACK = P["s5_config_feedback"]
 
 # Only cross-stage artifacts redirect. Manifests, run dirs, and logs belong to rules defined only when a stage reruns.
 if REUSE_OUTPUT_DIR is not None:
-    P_REUSE = resolve_pipeline_paths(config, output_dir=REUSE_OUTPUT_DIR)
+    P_REUSE = resolve_pipeline_paths(config, output_dir=REUSE_OUTPUT_DIR, enabled=ENABLED)
     if not RERUN["stage1"]:
         S1_OUTPUT = P_REUSE["s1_output"]
     if not RERUN["stage2"]:
         S2_OUTPUT = P_REUSE["s2_output"]
-    if not RERUN["stage3"]:
+    if ENABLED["stage3"] and not RERUN["stage3"]:
         S3_OUTPUT = P_REUSE["s3_output"]
-    if not RERUN["stage4"]:
+    if ENABLED["stage4"] and not RERUN["stage4"]:
         S4_OUTPUT = P_REUSE["s4_output"]
-
-STAGE3_CFG = config["stage3"]["dkx"]
-STAGE4_CFG = config["stage4"]["gkx"]
-# Resolved here rather than beside its rule so a misspelled convention is caught even when the run freezes Stage 4.
-RADIUS_RELABEL_CONVENTION = stage4_helper.resolve_radius_relabel(config)
 
 # Stage 5 post-processing convergence criterion (see the `convergence` block in inputs/<run>/config.yaml).
 PRESSURE_CONVERGENCE_METHOD = stage5_helper.resolve_pressure_convergence_method(config)
@@ -207,7 +222,7 @@ if RERUN["stage2"]:
 # In Stages 3 and 4, fd_gradients adds sibling runs such as rho_012_r0p4898_fd_n_D.
 SURF_PATTERN = r"rho_\d+_r[0-9p]+(?:_fd_[nt]_\w+)?"
 
-if RERUN["stage3"]:
+if ENABLED["stage3"] and RERUN["stage3"]:
     checkpoint stage3_prepare:
         input:
             config_file = S3_CONFIG,
@@ -271,7 +286,7 @@ if RERUN["stage3"]:
                 output_file=S3_OUTPUT,
             ) + " 2>&1 | tee {log}"
 
-if RERUN["stage4"]:
+if ENABLED["stage4"] and RERUN["stage4"]:
     checkpoint stage4_prepare:
         input:
             config_file = S4_CONFIG,
@@ -366,8 +381,7 @@ rule stage5_neopax:
         config_file = S5_CONFIG,
         wout    = S1_OUTPUT,
         boozer  = S2_OUTPUT,
-        neo_h5  = S3_OUTPUT,
-        turb_h5 = S4_OUTPUT,
+        fluxes = [path for path in (S3_OUTPUT, S4_OUTPUT) if path is not None],
     output:
         S5_OUTPUT,
     log:
