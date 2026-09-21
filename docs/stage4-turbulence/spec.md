@@ -2,6 +2,8 @@
 
 ## Overview
 
+The workflow can omit unused flux producers. See [automatic producer skipping](../mvp-pipeline.md#automatic-producer-skipping) for selector, input, and output requirements.
+
 Stage 4 solves the gyrokinetic equations to compute turbulent transport. The primary outputs -- heat and particle fluxes -- are both optimization objectives (to minimize) AND direct transport inputs for Stage 5.
 
 **JAX-first priority:** `GKX` is the primary code (JAX-native, differentiable). `GX` and `GENE` are traditional alternatives added later.

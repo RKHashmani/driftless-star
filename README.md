@@ -116,7 +116,7 @@ Snakemake DAG, end-to-end tests, and publishing. Details in the [Guide](docs/gui
 
 ## Usage
 
-A *run* is a folder under `inputs/` holding its run config (`config.yaml`) and every stage input. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5.
+A *run* is a folder under `inputs/` holding its run config (`config.yaml`) and the inputs required by enabled stages. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5. Stage 3 and Stage 4 can be [skipped automatically through their shared flux selectors](docs/mvp-pipeline.md#automatic-producer-skipping).
 
 `driftless-star` iterates toward transport-consistent profiles by chaining forward passes. Each pass's Stage 5 transport solution feeds the next one three ways: as a boundary refit from the evolved pressure, as kinetic profiles prescribed to Stages 3, 4, and 5, and as the advanced transport clock.
 
