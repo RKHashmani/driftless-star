@@ -137,7 +137,7 @@ def test_malformed_config_is_rejected(config: dict, expected: str) -> None:
 @pytest.mark.parametrize("profile_type", ["akima_spline", "cubic_spline", "power_series"])
 def test_pressure_feedback_selects_profile_type(profile_type):
     from src.utils.loop import pressure_feedback_command
-    command = pressure_feedback_command({"loop": {"pressure_profile_type": profile_type}})
+    command = pressure_feedback_command({"loop": {"pressure_profile_type": profile_type}}, ALL_TRUE)
     assert f"--profile-type {profile_type}" in command
     assert "write-input {input.transport} {input.s1_input}" in command
 
@@ -151,7 +151,7 @@ def test_pressure_feedback_rejects_bad_profile_type(value):
 
 def test_pressure_feedback_defaults_to_power_series():
     from src.utils.loop import pressure_feedback_command
-    assert "--profile-type power_series" in pressure_feedback_command({})
+    assert "--profile-type power_series" in pressure_feedback_command({}, ALL_TRUE)
 
 
 @pytest.mark.parametrize("reuse", [None, "outputs/iter_1"])
@@ -162,7 +162,7 @@ def test_frozen_pressure_feedback_copies_input_even_on_first_iteration(tmp_path,
     config = {"loop": {"rerun": {"stage1": False}}}
     if reuse:
         config["loop"]["reuse_output_dir"] = reuse
-    command = pressure_feedback_command(config)
+    command = pressure_feedback_command(config, resolve_rerun_flags(config))
     source, output = tmp_path / "input", tmp_path / "feedback"
     source.write_bytes(b"&INDATA\nAM = 7\n/\n")
     result = subprocess.run(command.format(input=SimpleNamespace(s1_input=source), output=SimpleNamespace(feedback=output)),
@@ -176,9 +176,9 @@ def test_frozen_pressure_feedback_copies_input_even_on_first_iteration(tmp_path,
 def test_evolving_equilibrium_requires_full_radius(edge):
     from src.utils.loop import validate_pressure_feedback_grid
     with pytest.raises(ValueError, match="rho_edge"):
-        validate_pressure_feedback_grid({}, edge)
+        validate_pressure_feedback_grid({}, edge, ALL_TRUE)
 
 
 def test_frozen_equilibrium_allows_truncated_transport():
     from src.utils.loop import validate_pressure_feedback_grid
-    validate_pressure_feedback_grid({"loop": {"rerun": {"stage1": False}}}, .7)
+    validate_pressure_feedback_grid({}, .7, {**ALL_TRUE, "stage1": False})
