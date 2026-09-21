@@ -11,6 +11,7 @@ which is what keeps the Stage 4 relabelling step on the grid NEOPAX will build.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,14 @@ from src.stage5_helper import (
 )
 
 _TEMPLATE = (
+    "[geometry]\n"
     'vmec_file = "PLACEHOLDER"\n'
     'boozer_file = "PLACEHOLDER"\n'
+    "[neoclassical]\n"
     'neoclassical_file = "PLACEHOLDER"\n'
+    "[turbulence]\n"
     'turbulence_file = "PLACEHOLDER"\n'
+    "[transport_output]\n"
     'transport_output_dir = "PLACEHOLDER"\n'
 )
 
@@ -126,3 +131,171 @@ def test_read_rho_edge_defaults_to_one(tmp_path: Path, body: str) -> None:
 def test_read_rho_edge_rejects_a_value_outside_the_unit_interval(tmp_path: Path, value: str) -> None:
     with pytest.raises(ValueError, match=r"\[geometry\].rho_edge"):
         read_rho_edge(str(_write_template(tmp_path, f"[geometry]\nrho_edge = {value}\n")))
+
+_SECTION_TEMPLATE = '''\
+[geometry]
+vmec_file = "stale.nc"
+boozer_file = "stale.nc"
+[neoclassical]
+flux_model = " NoNe "
+entropy_model = "fluxes_r_file"
+neoclassical_file = "stale-neoclassical.h5"
+[turbulence]
+flux_model = "NONE"
+turbulence_file = "stale-turbulence.h5"
+[transport_output]
+transport_output_dir = "stale-output/"
+'''
+
+
+def _prepare_optional_producers(
+    tmp_path: Path,
+    body: str,
+    *,
+    stage3: bool = False,
+    stage4: bool = False,
+    producer_root: Path | None = None,
+) -> tuple[Path, Path]:
+    template = tmp_path / "source.toml"
+    template.write_text(body)
+    out = tmp_path / "out"
+    producer_root = producer_root or out
+    resolved = out / "stage5_transport" / "resolved.toml"
+    prepare_neopax_config(
+        s5_config_template=str(template),
+        s5_resolved_config=str(resolved),
+        s1_output=str(out / "stage1_equilibrium" / "wout.nc"),
+        s2_output=str(out / "stage2_boozer" / "boozmn.nc"),
+        s3_output=str(producer_root / "stage3_neoclassical" / "flux.h5") if stage3 else None,
+        s4_output=str(producer_root / "stage4_turbulence" / "flux.h5") if stage4 else None,
+        s5_output_dir=str(resolved.parent),
+    )
+    return template, resolved
+
+
+@pytest.mark.parametrize("stage3", [False, True])
+@pytest.mark.parametrize("stage4", [False, True])
+def test_optional_producer_paths_and_selectors(tmp_path: Path, stage3: bool, stage4: bool) -> None:
+    template, resolved = _prepare_optional_producers(
+        tmp_path, _SECTION_TEMPLATE, stage3=stage3, stage4=stage4
+    )
+    document = tomllib.loads(resolved.read_text())
+    assert document["neoclassical"]["neoclassical_file"] == (
+        "../stage3_neoclassical/flux.h5" if stage3 else ""
+    )
+    assert document["turbulence"]["turbulence_file"] == (
+        "../stage4_turbulence/flux.h5" if stage4 else ""
+    )
+    assert document["neoclassical"]["flux_model"] == " NoNe "
+    assert document["neoclassical"]["entropy_model"] == "fluxes_r_file"
+    assert document["turbulence"]["flux_model"] == "NONE"
+    assert document["geometry"]["vmec_file"] == "../stage1_equilibrium/wout.nc"
+    assert document["geometry"]["boozer_file"] == "../stage2_boozer/boozmn.nc"
+    assert document["transport_output"]["transport_output_dir"] == "./"
+    assert template.read_text() == _SECTION_TEMPLATE
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[neoclassical]\nflux_model = "none"\n[turbulence]\nflux_model = "none"\n',
+        '[neoclassical]\n  "neoclassical_file" = ""\n[turbulence]\n  turbulence_file = ""\n',
+        '[unrelated]\nneoclassical_file = "retain.h5"\nturbulence_file = "retain.h5"\n',
+    ],
+)
+def test_absent_or_empty_skipped_fields_need_no_edits(tmp_path: Path, body: str) -> None:
+    template, resolved = _prepare_optional_producers(tmp_path, body)
+    assert resolved.read_text() == body
+    assert template.read_text() == body
+
+
+def test_frozen_producer_paths_resolve_to_previous_iteration(tmp_path: Path) -> None:
+    # JSON surrogate escapes for non-BMP characters are invalid in TOML.
+    producer_root = tmp_path / "previous_\U0001f680"
+    _, resolved = _prepare_optional_producers(
+        tmp_path, _SECTION_TEMPLATE, stage3=True, stage4=True, producer_root=producer_root
+    )
+    document = tomllib.loads(resolved.read_text())
+    for section, field, directory in [
+        ("neoclassical", "neoclassical_file", "stage3_neoclassical"),
+        ("turbulence", "turbulence_file", "stage4_turbulence"),
+    ]:
+        assert (resolved.parent / document[section][field]).resolve() == (
+            producer_root / directory / "flux.h5"
+        )
+
+
+@pytest.mark.parametrize("section,field,body,existing", [
+    ("geometry", "vmec_file", '[{section}]\n  {field} = "old.nc"\n', False),
+    ("geometry", "vmec_file", '[{section}]\n{field} = """\nold.nc\n"""\n', True),
+    ("neoclassical", "neoclassical_file", '[{section}]\n"{field}" = "stale.h5"\n', True),
+    ("neoclassical", "neoclassical_file", '{section}.{field} = "stale.h5"\n', False),
+    ("turbulence", "turbulence_file", '{section} = {{{field} = "stale.h5"}}\n', True),
+    ("geometry", "boozer_file", '[{section}]\n{field} = "old.nc"\n[other]\n{field} = "keep.nc"\n', True),
+    ("transport_output", "transport_output_dir",
+     '[{section}]\n{field} = "old/"\n[other]\ntext = \'\'\'\n{field} = "keep/"\n\'\'\'\n', False),
+])
+def test_unsafe_path_edits_fail_before_writing(
+    tmp_path: Path, section: str, field: str, body: str, existing: bool
+) -> None:
+    body = body.format(section=section, field=field)
+    resolved = tmp_path / "out" / "stage5_transport" / "resolved.toml"
+    if existing:
+        resolved.parent.mkdir(parents=True)
+        resolved.write_text("previous resolved config\n")
+    with pytest.raises(ValueError) as error:
+        _prepare_optional_producers(tmp_path, body)
+    message = str(error.value)
+    assert str(tmp_path / "source.toml") in message
+    assert f"[{section}].{field}" in message
+    assert "unquoted key at the start of a line with a single-line value" in message
+    assert (tmp_path / "source.toml").read_text() == body
+    if existing:
+        assert resolved.read_text() == "previous resolved config\n"
+    else:
+        assert not resolved.parent.exists()
+
+
+def test_skipped_fields_allow_unrelated_nan(tmp_path: Path) -> None:
+    body = _SECTION_TEMPLATE + '\n[other]\nvalue = nan\nvalues = [nan, +nan, -nan]\n'
+    template, resolved = _prepare_optional_producers(tmp_path, body)
+    document = tomllib.loads(resolved.read_text(), parse_float=str)
+    assert document["neoclassical"]["neoclassical_file"] == ""
+    assert document["turbulence"]["turbulence_file"] == ""
+    assert document["other"] == {"value": "nan", "values": ["nan", "+nan", "-nan"]}
+    assert template.read_text() == body
+
+
+def test_invalid_template_reports_path_fields_without_overwriting(tmp_path: Path) -> None:
+    resolved = tmp_path / "out" / "stage5_transport" / "resolved.toml"
+    resolved.parent.mkdir(parents=True)
+    resolved.write_text("previous resolved config\n")
+    with pytest.raises(ValueError, match=r"source\.toml.*\[neoclassical\].neoclassical_file.*invalid TOML"):
+        _prepare_optional_producers(tmp_path, "[neoclassical\n")
+    assert resolved.read_text() == "previous resolved config\n"
+
+
+def test_non_table_flux_section_fails_before_creating_output(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"source\.toml.*\[neoclassical\].neoclassical_file.*TOML table"):
+        _prepare_optional_producers(tmp_path, 'neoclassical = "none"\n')
+    assert not (tmp_path / "out").exists()
+
+
+def test_relative_enabled_and_frozen_input_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    template = Path("source.toml")
+    template.write_text(_SECTION_TEMPLATE)
+    resolved = Path("current/stage5_transport/resolved.toml")
+    prepare_neopax_config(
+        s5_config_template=str(template),
+        s5_resolved_config=str(resolved),
+        s1_output="current/stage1_equilibrium/wout.nc",
+        s2_output="current/stage2_boozer/boozmn.nc",
+        s3_output="previous/stage3_neoclassical/flux.h5",
+        s4_output="current/stage4_turbulence/flux.h5",
+        s5_output_dir=str(resolved.parent),
+    )
+    document = tomllib.loads(resolved.read_text())
+    assert document["neoclassical"]["neoclassical_file"] == "../../previous/stage3_neoclassical/flux.h5"
+    assert document["turbulence"]["turbulence_file"] == "../stage4_turbulence/flux.h5"
+    assert template.read_text() == _SECTION_TEMPLATE
