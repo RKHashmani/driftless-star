@@ -270,7 +270,7 @@ pixi install --manifest-path stages/pixi.toml --environment stage-5-neopax
 
 ### How to Run
 
-Stage 5 is orchestrated by Snakemake (`rule stage5_neopax`), which runs `neopax` on a config assembled from the upstream Stage 1/2/3/4 outputs. See the [Workflow Engine -- Snakemake](#workflow-engine----snakemake) section to run the forward pass through Stage 5, and [Closing the Loop](#closing-the-loop) for feeding the transport solution back into the next forward pass.
+Stage 5 is orchestrated by Snakemake (`rule stage5_neopax`), which runs `neopax` on a config assembled from geometry and enabled flux outputs. See the [Workflow Engine -- Snakemake](#workflow-engine----snakemake) section to run the forward pass through Stage 5, and [Closing the Loop](#closing-the-loop) for feeding the transport solution back into the next forward pass.
 
 > [!NOTE]
 > `NEOPAX`, being the final stage, has additional complexities. Ideally the script using `NEOPAX` runs a loop over `DKX` fluxes to optimize for ambipolarity, which is the most computationally expensive step in the pipeline.
@@ -281,7 +281,7 @@ Stage 5 is orchestrated by Snakemake (`rule stage5_neopax`), which runs `neopax`
 
 **Code:** [Snakemake](https://snakemake.readthedocs.io/) 
 
-Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stage 4} -> Stage 5`. Stage 2 follows Stage 1; Stages 3 and 4 both need the Stage 1 wout and the Stage 2 boozmn, so they fan out in parallel after Stage 2; and Stage 5 consumes all upstream outputs (wout, boozmn, neoclassical + turbulent fluxes). Each stage runs inside its pre-built GHCR container image (`ghcr.io/driftless-star/driftless-star:stage-N-<code>-{cpu,gpu}`) via `docker run`, so no local Pixi install is required beyond the `pipeline` env itself.
+Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stage 4} -> Stage 5`. Stage 2 follows Stage 1; Stages 3 and 4 both need the Stage 1 wout and the Stage 2 boozmn, so they fan out in parallel after Stage 2; and Stage 5 consumes wout, boozmn, and fluxes from enabled producers. Each stage runs inside its pre-built GHCR container image (`ghcr.io/driftless-star/driftless-star:stage-N-<code>-{cpu,gpu}`) via `docker run`, so no local Pixi install is required beyond the `pipeline` env itself.
 
 | Direction | Format              | Location                                                                                                                                                           |
 | --------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -296,10 +296,21 @@ Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stag
 | **Out**   | Stage 5 HDF5        | `outputs/quick_run/stage5_transport/transport_solution.h5` (transport solution; default `rule all` target)                                                         |
 
 > [!NOTE]
-> `rule all` targets the Stage 5 transport solution (`transport_solution.h5`); all upstream artifacts (wout, boozmn, neoclassical + turbulent fluxes) are produced transitively because downstream rules declare them as `input:`. The loop-closing post-processing step is *not* part of `rule all` -- a plain `snakemake` stays a pure forward pass; see [Closing the Loop](#closing-the-loop).
+> `rule all` targets the Stage 5 transport solution (`transport_solution.h5`); geometry and enabled flux artifacts are produced transitively because downstream rules declare them as `input:`. The loop-closing post-processing step is *not* part of `rule all` -- a plain `snakemake` stays a pure forward pass; see [Closing the Loop](#closing-the-loop).
 
 > [!NOTE]
 > Docker must be running on the host. On macOS / Windows that is Docker Desktop; on Linux, the docker engine or a rootless equivalent (podman aliased to `docker`). Windows users should invoke from WSL2 or Git Bash so bash expansions like `$PWD` resolve correctly inside the Snakefile's shell directives; GPU mode needs WSL2 specifically, since the slot allocator requires a POSIX host (see [Multi-GPU scheduling](#multi-gpu-scheduling)). HPC clusters that disallow Docker are a planned follow-up (Apptainer via `--sdm apptainer`).
+
+### Automatic producer skipping
+
+Set `[neoclassical].flux_model = "none"` in the shared TOML to skip Stage 3, or `[turbulence].flux_model = "none"` to skip Stage 4. Matching ignores case and surrounding whitespace. Missing selectors, empty strings, and other strings keep the producer enabled. Non-string selectors are rejected. Legacy TOML `model` keys and entropy settings do not control skipping. Neither does `response_mode: none` in the YAML run config. Stages 1, 2, and 5 remain enabled.
+
+A skipped producer needs no input file, YAML block (`stage3` or `stage4`), or filename entries (`s3_config` and `s3_output`, or `s4_config` and `s4_output`). Its YAML block is ignored. It has no jobs, flux dependencies, or new output directory. Existing output directories are left untouched. The generated Stage 5 config clears skipped flux-file paths without changing the source template or selectors. Clearing the neoclassical path is required by the [pinned NEOPAX loader](https://github.com/uwplasma/NEOPAX/blob/9bc2b6a829845c57280620ee9dfc3e9fa9f4ebab/NEOPAX/_orchestrator.py#L361-L374). The turbulence path is cleared for consistency.
+
+Skipping applies from the first pass. [Freezing](#per-stage-rerun-flags) instead runs an enabled stage once and reuses its output on later iterations. Freeze dependencies consider only enabled stages. With both producers skipped, a forward pass creates only Stage 1, 2, and 5 output directories. Targeting the convergence signal also creates the post-processing directory.
+
+> [!NOTE]
+> If you copy quick_run and skip both producers, set `[transport_solver].debug_stage_markers = false`. With debug markers enabled, this case fails in the pinned NEOPAX `debug_components` routine with a JAX rank error.
 
 ### Per-surface fan-out (Stages 3 and 4)
 
@@ -498,7 +509,7 @@ pixi run driftless-star --max-iters 3 --cores 4
 | `--htcondor-jobdir` | the profile's `htcondor-jobdir` | Per-run directory for HTCondor's logs. Parallel controllers need distinct values (see [Where the logs go](../executors/htcondor/README.md#where-the-logs-go)). |
 
 > [!NOTE]
-> Each iteration is a full forward pass, so Docker must be running and all stage images must be available (the loop exercises `stage-1-vmex` through `stage-5-neopax`; the post-processing step reuses the Stage 5 image). The driver runs on the orchestration `pipeline` env, like Snakemake itself.
+> Each iteration runs the enabled stages that rerun, so Docker must be running when using the Docker runtime and those stage images must be available (the loop uses enabled images from `stage-1-vmex` through `stage-5-neopax`; the post-processing step reuses the Stage 5 image). The driver runs on the orchestration `pipeline` env, like Snakemake itself.
 
 ### What it does
 
@@ -508,7 +519,7 @@ Each iteration runs as an independent Snakemake pass with `input_dir`/`output_di
 2. **Prescribes** the evolved kinetic profiles: it copies this pass's `common_input.toml` and replaces the whole `[profiles]` section with `model = "prescribed"` plus the density, temperature, `Er` and face-gradient arrays of the transport solution's final time slice, writing the copy to a *declared* `profiles_feedback` output beside the evolved boundary (`write_prescribed_profiles_from_transport_h5.py ... --output-toml`). The same writer advances `[transport_solver].t0` and `dt` to the solution's `final_time` and `next_dt`. The next pass then continues the transport window instead of re-integrating it. Once the clock is at or past `t_final`, the writer leaves both keys unchanged. Everything else is copied through unchanged, so the result is a drop-in template for the next pass.
 3. **Checks convergence** (`stage5_post_processing.py`), writing `converge_status.json` alongside them.
 
-The driver chains iterations through both artifacts: it seeds iteration N+1's `input/` with iteration N's evolved boundary and its prescribed-profiles `common_input.toml`, re-seeding the Stage 3/4 configs and run config from the base each pass. From iteration 2 it also writes `loop_overrides.yaml` into that iteration's `input/`, setting `stage3.dkx.profiles_source` and `stage4.gkx.profiles_source` to `prescribed` so both stages read the seeded arrays instead of rebuilding analytical profiles. When [per-stage rerun flags](#per-stage-rerun-flags) freeze part of the pipeline, the same file also records the rerun map and the iteration 1 tree its artifacts are reused from, and the `prescribed` switch is written only for whichever of Stages 3 and 4 still rerun. That file is appended **after** the base run config under the single `--configfile` flag, which Snakemake deep-merges in order with later files taking precedence; a second `--configfile` occurrence would replace the first and silently drop the base config. Committed inputs and templates are never mutated; every artifact lives under `outputs/<run>/loop/`.
+The driver chains iterations through both artifacts: it seeds iteration N+1's `input/` with iteration N's evolved boundary (or the base boundary when Stage 1 is frozen) and its prescribed-profiles `common_input.toml`, re-seeding enabled Stage 3/4 configs and the run config from the base each pass. From iteration 2 it writes `loop_overrides.yaml` into that iteration's `input/` when settings need changing, setting `stage3.dkx.profiles_source` and `stage4.gkx.profiles_source` to `prescribed` so enabled, rerunning producers read the seeded arrays instead of rebuilding analytical profiles. When [per-stage rerun flags](#per-stage-rerun-flags) freeze part of the pipeline, the same file also records the rerun map and the iteration 1 tree its artifacts are reused from, and the `prescribed` switch is written only for whichever of Stages 3 and 4 are enabled and still rerun. That file is appended **after** the base run config under the single `--configfile` flag, which Snakemake deep-merges in order with later files taking precedence; a second `--configfile` occurrence would replace the first and silently drop the base config. Committed inputs and templates are never mutated; every artifact lives under `outputs/<run>/loop/`.
 
 > [!NOTE]
 > From iteration 2 both scans are pinned to the transport face grid (`[geometry].n_radial + 1` faces, less the dropped magnetic-axis face, so 5 surfaces for quick_run), because the prescribed arrays exist only there. This mirrors what `profiles_source: transport_h5` already does. Iteration 1 is not a different grid, because under `analytical` an unset `analytical_n_radii` falls back to that same face count in both stages. The whole loop therefore scans one set of radii, and the ported face operator runs on NEOPAX's own faces, where it reproduces NEOPAX exactly rather than approximating it.
@@ -598,17 +609,17 @@ loop:
     stage5: true
 ```
 
-Omitted keys default to `true`, so an absent block reproduces exactly the behavior described above. A stage set to `false` is **frozen**. Iteration 1 always runs the full pipeline; from iteration 2 a frozen stage's rules are left out of the workflow entirely and the rules consuming its artifacts read them straight out of `outputs/<run>/loop/iter_1/output/`. Nothing is copied, and because no rule in the pass can produce those files, the iteration 1 records can never be overwritten by a later pass. Deleting them mid-run simply fails the next iteration with Snakemake's ordinary missing-input error.
+Omitted keys default to `true`, so an absent block reproduces exactly the behavior described above. A stage set to `false` is **frozen**. Iteration 1 always runs every enabled stage; from iteration 2 a frozen stage's rules are left out of the workflow entirely and the rules consuming its artifacts read them straight out of `outputs/<run>/loop/iter_1/output/`. Nothing is copied, and because no rule in the pass can produce those files, the iteration 1 records can never be overwritten by a later pass. Deleting them mid-run simply fails the next iteration with Snakemake's ordinary missing-input error.
 
-**Legal combinations.** A frozen stage must never be paired with regenerated upstream stage outputs, so every stage whose outputs it reads has to be frozen as well. Stage 2 reads Stage 1; Stages 3 and 4 each read Stages 1 and 2, the neoclassical scan taking the boozmn for NEOPAX's minor radius; Stage 5 reads Stages 1 through 4. Seven frozen sets survive that rule -- `{}`, `{1}`, `{1,2}`, `{1,2,3}`, `{1,2,4}`, `{1,2,3,4}`, and all five. Anything else raises a `ValueError` from the shared helper `resolve_rerun_flags` (`src/utils/loop.py`), at driver startup and again at Snakefile parse time, before any job runs. The rule covers stage outputs only: Stages 3 and 4 also read the prescribed profiles in `common_input.toml`, which evolve every iteration, and freezing either stage deliberately keeps fluxes computed from an earlier pass's profiles.
+**Legal combinations.** A frozen enabled stage must never be paired with regenerated upstream stage outputs, so every enabled stage whose outputs it reads has to be frozen as well. Stage 2 reads Stage 1; Stages 3 and 4 each read Stages 1 and 2, the neoclassical scan taking the boozmn for NEOPAX's minor radius; Stage 5 reads Stages 1 and 2 and enabled flux producers. With both producers enabled, seven frozen sets survive that rule -- `{}`, `{1}`, `{1,2}`, `{1,2,3}`, `{1,2,4}`, `{1,2,3,4}`, and all five. Anything else raises a `ValueError` from the shared helper `resolve_rerun_flags` (`src/utils/loop.py`), at driver startup and again at Snakefile parse time, before any job runs. The rule covers stage outputs only: Stages 3 and 4 also read the prescribed profiles in `common_input.toml`, which evolve every iteration, and freezing either stage deliberately keeps fluxes computed from an earlier pass's profiles.
 
-**How the flags take effect.** A plain `snakemake` never freezes anything; it validates the block and then treats every stage as rerunning. The flags bite only through the driver's `loop_overrides.yaml`, which from iteration 2 restates the validated flag map under `loop.rerun` and adds `loop.reuse_output_dir: <output_dir>/loop/iter_1/output`. The Snakefile drops a stage's rules only when that reuse tree is present in the merged config, which is why iteration 1 and every non-loop invocation still build the whole pipeline. `loop.reuse_output_dir` is driver-owned; the driver rejects a run config that sets it, since it would freeze stages already in iteration 1.
+**How the flags take effect.** A plain `snakemake` never freezes anything; it validates the block and then treats every enabled stage as rerunning. The flags bite only through the driver's `loop_overrides.yaml`, which from iteration 2 restates the validated flag map under `loop.rerun` and adds `loop.reuse_output_dir: <output_dir>/loop/iter_1/output`. The Snakefile drops a frozen stage's rules only when that reuse tree is present in the merged config, which is why iteration 1 and every non-loop invocation still build every enabled stage. `loop.reuse_output_dir` is driver-owned; the driver rejects a run config that sets it, since it would freeze stages already in iteration 1.
 
 **Frozen Stage 1.** When Stage 1 is frozen, the loop does not feed pressure back to the equilibrium. Each iteration copies its `s1_input` from the base inputs. The geometry stays fixed while the profiles evolve. Post-processing copies the unchanged Stage 1 input into its feedback file. It logs that it skipped pressure export. This also applies in iteration 1. The initial equilibrium solve still runs.
 
-**Provenance.** The `profiles_source: prescribed` override is emitted only for the stages that rerun, so a frozen Stage 3 or 4 keeps recording the `analytical` source its iteration 1 run actually used.
+**Provenance.** The `profiles_source: prescribed` override is emitted only for enabled stages that rerun, so a frozen Stage 3 or 4 keeps recording the `analytical` source its iteration 1 run actually used.
 
-**All five frozen.** Nothing can change between iterations, so the driver logs that, runs one forward pass, and stops regardless of `--max-iters`.
+**All enabled stages frozen.** Nothing can change between iterations, so the driver logs that, runs one forward pass, and stops regardless of `--max-iters`.
 
 ### Output layout
 
@@ -619,10 +630,10 @@ outputs/<run>/loop/iter_N/
 ├── input/                              # seeded each pass (run config + boundary + Stage 3/4/5 configs)
 │   ├── config.yaml
 │   ├── vmec_input.<run>                # boundary that fed this pass (base on iter 1, previous pressure feedback after)
-│   ├── sfincs_input.<run>
-│   ├── <run>.toml
+│   ├── sfincs_input.<run>              # only when Stage 3 is enabled
+│   ├── <run>.toml                      # only when Stage 4 is enabled
 │   ├── common_input.toml               # shared Stage 3/4/5 config (base on iter 1, previous prescribed profiles after)
-│   └── loop_overrides.yaml             # iter 2 onward; switches rerunning Stages 3/4 to prescribed, plus any frozen stages and their reuse tree
+│   └── loop_overrides.yaml             # when needed from iter 2, records prescribed profiles and frozen-output reuse
 └── output/
     ├── stage1_equilibrium/ ... stage5_transport/   # stage dirs this pass ran (frozen stages appear only under iter_1)
     └── stage5_post_processing/

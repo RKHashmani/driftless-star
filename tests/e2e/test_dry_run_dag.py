@@ -458,7 +458,7 @@ def test_reuse_tree_with_all_frozen_fails_at_parse(tmp_path: Path) -> None:
     result = _dry_run(tmp_path, targets=[], config_overrides=[], extra_configfiles=[str(overrides)])
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
-    assert "freezes every stage" in output, output
+    assert "freezes every enabled stage" in output, output
 
 
 @pytest.mark.parametrize("frozen,profile_type", [

@@ -116,7 +116,7 @@ Snakemake DAG, end-to-end tests, and publishing. Details in the [Guide](docs/gui
 
 ## Usage
 
-A *run* is a folder under `inputs/` that holds its run config (`config.yaml`) and stage inputs. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. Two W7-X configurations are committed beside it: `inputs/w7-x_quick_run/` for a smoke run and `inputs/w7-x_t3d_validation/` for the Trinity3D validation resolution. Their Stage 3 SFINCS namelist for DKX, `sfincs_input.w7x_t3d_reconstruction`, remains local. Add that file to the selected run directory before you start a W7-X run. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5.
+A *run* is a folder under `inputs/` that holds its run config (`config.yaml`) and the inputs required by enabled stages. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. Two W7-X configurations are committed beside it: `inputs/w7-x_quick_run/` for a smoke run and `inputs/w7-x_t3d_validation/` for the Trinity3D validation resolution. Their Stage 3 SFINCS namelist for DKX, `sfincs_input.w7x_t3d_reconstruction`, remains local. Add that file to the selected run directory before you start a W7-X run. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5. Stage 3 and Stage 4 can be [skipped automatically through their shared flux selectors](docs/mvp-pipeline.md#automatic-producer-skipping).
 
 `driftless-star` iterates toward transport-consistent profiles by chaining forward passes. Each pass's Stage 5 transport solution feeds the next one three ways: as a boundary refit from the evolved pressure, as kinetic profiles prescribed to Stages 3, 4, and 5, and as the advanced transport clock.
 
