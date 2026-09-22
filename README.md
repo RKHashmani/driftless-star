@@ -167,17 +167,26 @@ GPU mode needs an NVIDIA host with `nvidia-container-toolkit` configured on the 
 
 ### Recreate the Trinity3D + GX validation
 
-Both W7-X configurations use `stage3.dkx` and write `dkx_flux_profiles.h5`. To resume an older run whose Stage 3 artifact is named `sfincs_jax_flux_profiles.h5`, set `filenames.s3_output` to that existing filename in the run config.
+The W7-X comparison configurations use `stage3.dkx` and write `dkx_flux_profiles.h5` when neoclassical transport is enabled. Cases with neoclassical transport off, including the benchmark, skip Stage 3 entirely. To resume an older run whose enabled Stage 3 artifact is named `sfincs_jax_flux_profiles.h5`, set `filenames.s3_output` to that existing filename in the run config.
 
-`inputs/w7-x_t3d_validation/` reconstructs the W7-X ion-temperature clamping case that Trinity3D runs with GX as its turbulent flux model. Frozen 6.7 keV electrons heat the evolving 1 keV ions through collisional exchange while ITG turbulence limits the resulting gradient. The transport grid has eight cells bounded by nine faces out to rho = 0.7. Stages 3 and 4 omit the magnetic axis and scan the eight non-axis faces. Iteration 1 builds every stage input from the analytical `[profiles]` parameters. Later iterations prescribe their profiles from the previous transport solution.
+`inputs/w7-x/t3d_benchmark/` provides the Driftless Star benchmark compared with the separate Trinity3D + GX reference. Frozen 6.7 keV electrons heat the evolving 1 keV ions through collisional exchange while ITG turbulence limits the resulting gradient. The transport grid has eight cells bounded by nine faces out to rho = 0.7. Stage 3 is skipped. Stage 4 omits the magnetic axis and scans the eight non-axis faces. Iteration 1 uses the analytical `[profiles]` parameters. Later iterations prescribe profiles from the previous transport solution while keeping the supplied equilibrium fixed.
 
-Before you launch, add `inputs/w7-x_t3d_validation/sfincs_input.w7x_t3d_reconstruction`. Pull the Stage 4 and 5 GPU images. Adjust `gpu_ids` and `jobs_per_gpu` for your host as described above. Then run the loop:
+Before launching, follow the [supplied-equilibrium setup](inputs/w7-x/t3d_benchmark/README.md) so Stage 1 uses the included NetCDF file. Make the workflow's GPU images available and adjust `gpu_ids` and `jobs_per_gpu` for your host. Then run the loop.
 
 ```
-pixi run driftless-star --config inputs/w7-x_t3d_validation/config.yaml --max-iters 10 --cores 16
+pixi run driftless-star --config inputs/w7-x/t3d_benchmark/config.yaml --max-iters 400 --cores 8
 ```
 
-Each iteration lands under `outputs/w7-x_t3d_validation/loop/iter_N/`. Its status signal is `output/stage5_post_processing/converge_status.json`. The last completed iteration's `output/stage5_transport/transport_solution.h5` contains the clamped ion temperature profile for comparison with Trinity3D's `test-w7x-gx` case.
+Each iteration lands under `outputs/w7-x/t3d_benchmark/loop/iter_N/`. Its status signal is `output/stage5_post_processing/converge_status.json`. The last completed iteration's `output/stage5_transport/transport_solution.h5` contains the ion temperature profile for comparison with Trinity3D's `test-w7x-gx` case at the same transport time.
+
+The four other [W7-X comparison cases](inputs/w7-x/) use matched initial pressure on the full radial domain and vary equilibrium feedback and neoclassical transport.
+
+Once all five cases have run, `stages/stage5-post-processing/plot_w7x_figures.py` draws the five comparison figures into `outputs/w7-x/plots/`. It needs the stage-5 environment, because the collisional-heating figure evaluates the saved source models through NEOPAX. Run it from the repository root inside the stage-5 image. Add `--t3d-nc <path>` to overlay the Trinity3D + GX reference when you have that NetCDF file; without it the figures show the Driftless Star runs alone.
+
+```
+docker run --rm -e HOME=/tmp -v "$PWD:/work" -w /work ghcr.io/driftless-star/driftless-star:stage-5-neopax-cpu \
+    python stages/stage5-post-processing/plot_w7x_figures.py
+```
 
 ### Visualize the pipeline graph
 
