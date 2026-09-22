@@ -487,8 +487,6 @@ Jobs that are already up to date are drawn with dashed borders. Prefer SVG: a fa
 
 ## Closing the Loop
 
-For a guided first run, follow [Run the feedback loop](tutorials/run-feedback-loop.md).
-
 The pipeline repeats forward passes toward a transport-consistent state. Stage 5's transport solution supplies two kinds of feedback for the next pass. A new Stage 1 input contains the evolved pressure. Stages 3, 4, and 5 read the evolved kinetic profiles as prescribed profiles. Each iteration uses its own `outputs/<run>/loop/iter_N/` directory. Thus, feedback does not form a cycle within a single Snakemake DAG. The external driver (`src/ouroboros.py`, exposed as the `driftless-star` pixi task) runs each iteration as an independent Snakemake run. It copies the previous pass's feedback files into the next pass's inputs. The driver reads committed inputs under `inputs/<run>/` without changing them.
 
 ### How to Run
@@ -676,10 +674,6 @@ The RMS method allows a change confined to a few radii to be averaged below the 
 If the transport solution has fewer than two distinct time slices, convergence cannot be assessed and the pass is not converged, which is neither a halt nor an error.
 
 > [!NOTE]
-> To render the file-flow graph including post-processing, target the convergence signal as shown below. See [Visualizing the file-flow graph](#visualizing-the-file-flow-graph) for renderer setup and other formats. Omitting the target graphs the plain forward pass, which stops at Stage 5.
-
-```bash
-pixi run -e pipeline bash -c 'snakemake --filegraph outputs/quick_run/stage5_post_processing/converge_status.json --configfile inputs/quick_run/config.yaml | dot -Tsvg > driftless-star_filegraph.svg'
-```
+> To render the file-flow graph *including* this post-processing step, target the signal file; see the [README](../README.md#visualize-the-pipeline-graph). Omitting the target graphs the plain forward pass (stops at Stage 5).
 
 ---
