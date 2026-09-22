@@ -34,7 +34,7 @@
 
 ## Stage Test Data
 
-A fresh clone ships one runnable, reduced-accuracy example under `inputs/quick_run/`, holding every stage input plus the run config, flat in one folder. Two W7-X cases sit beside it, `w7-x_quick_run/` at that same smoke resolution and `w7-x_t3d_validation/` at the Trinity3D validation resolution. Their Stage 3 SFINCS namelist for DKX is not committed. Add it to the run directory first, as the [README](../README.md#usage) Usage section describes. The scripts that consume them live under `stages/`:
+A fresh clone ships a reduced-accuracy example under `inputs/quick_run/`, holding every stage input plus the run config in one folder. The five [W7-X comparison cases](../inputs/w7-x/) under `inputs/w7-x/` include a benchmark and four cases that vary equilibrium feedback and neoclassical transport. Only the neoclassical-on cases include a Stage 3 namelist. Before running `inputs/w7-x/t3d_benchmark/`, [copy its supplied equilibrium into the Stage 1 output location](../inputs/w7-x/t3d_benchmark/README.md). The scripts that consume these inputs live under `stages/`.
 
 ```
 inputs/quick_run/
