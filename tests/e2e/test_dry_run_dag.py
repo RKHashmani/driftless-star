@@ -22,14 +22,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
-import pytest
 
 from src.ouroboros import _write_loop_overrides
 from src.utils import RESOLVED_COMMON_CONFIG, resolve_pipeline_paths
+from tests.helpers.runs import W7X_RUNS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FORWARD_RULES = (
@@ -112,6 +113,30 @@ def test_forward_pass_dag_dry_run(tmp_path: Path, custom_output: bool) -> None:
     for rule in DEFERRED_RULES:
         assert rule not in output, f"per-surface rule {rule} planned before its checkpoint ran:\n{output}"
     assert "checkpoint jobs" in output, output
+
+
+@pytest.mark.parametrize(("run", "stage3_enabled"), [(run, run.endswith("neoclassical_on")) for run in W7X_RUNS])
+def test_w7x_forward_pass_dag_dry_run(tmp_path: Path, run: str, stage3_enabled: bool) -> None:
+    """W7-X runs schedule DKX only when neoclassical transport is enabled."""
+    result = _dry_run(tmp_path, targets=[], config_overrides=[], configfile=f"inputs/{run}/config.yaml",
+                      printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    for rule in FORWARD_RULES:
+        expected = stage3_enabled or not rule.startswith("stage3_")
+        assert (rule in output) == expected, f"rule {rule} scheduling mismatch:\n{output}"
+    resolved = tomllib.loads((tmp_path / "out/stage5_transport" / RESOLVED_COMMON_CONFIG).read_text())
+    if stage3_enabled:
+        assert "stage-3-dkx-gpu" in output, output
+        assert resolved["neoclassical"]["flux_model"] == "dkx_fluxes_r_file"
+        assert resolved["neoclassical"]["neoclassical_file"] == "../stage3_neoclassical/dkx_flux_profiles.h5"
+    else:
+        assert "Stage 3 is skipped" in output, output
+        assert "dkx_radial_scan.py" not in output, output
+        assert "stage3_neoclassical" not in output, output
+        assert not (tmp_path / "out/stage3_neoclassical").exists()
+        assert resolved["neoclassical"]["flux_model"] == "none"
+        assert resolved["neoclassical"].get("neoclassical_file", "") == ""
 
 
 # When you explicitly ask Snakemake to build the convergence-signal file (the loop-closing target), the post-processing

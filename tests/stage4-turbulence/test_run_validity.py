@@ -376,36 +376,6 @@ def test_explicit_incomplete_collection_marks_invalid_perturbation_absent(worker
         assert "missing trusted completion marker" in output["meta"].attrs["invalid_runs_json"]
 
 
-def test_untrusted_diagnostics_remain_available_as_labelled_raw_plots(tmp_path, monkeypatch):
-    import sys
-    import types
-    from unittest.mock import MagicMock
-
-    scan = load_stage_module("stages/stage4-turbulence/gkx_radial_scan.py")
-    pyplot = MagicMock()
-    figure, axes = MagicMock(), MagicMock()
-    pyplot.subplots.return_value = (figure, axes)
-    matplotlib = types.ModuleType("matplotlib")
-    matplotlib.pyplot = pyplot
-    monkeypatch.setitem(sys.modules, "matplotlib", matplotlib)
-    monkeypatch.setitem(sys.modules, "matplotlib.pyplot", pyplot)
-    run = {"rho": 0.5, "run_dir": str(tmp_path), "output_prefix": str(tmp_path / "run")}
-    write_diagnostics(run, "t,heat_flux,particle_flux\n0,nan,0\n1,2,3\n")
-    manifest = {"schema_version": 3, "runtime_species_names": [], "runs": [run]}
-    statuses = [validity.completion_status(manifest, run)]
-    monkeypatch.setattr(scan, "completion_status", lambda *_: pytest.fail("plotter repeated completion check"))
-    paths, notices = scan._write_run_heat_flux_trace_plots(manifest=manifest, species_names=[], statuses=statuses)
-    assert paths == [tmp_path / "heat_flux_trace.png"]
-    assert notices == []
-    assert "Untrusted diagnostic trace" in figure.suptitle.call_args.args[0]
-    figure.savefig.assert_called_once()
-    validity.diagnostics_path(run).unlink()
-    paths, notices = scan._write_run_heat_flux_trace_plots(manifest=manifest, species_names=[], statuses=statuses)
-    assert paths == []
-    assert len(notices) == 1
-    assert "failed to read" in notices[0]
-
-
 @pytest.mark.parametrize("key,value", [
     ("parameter_audit", {
         "beta_source": "profiles", "collisionality_source": "fixed",

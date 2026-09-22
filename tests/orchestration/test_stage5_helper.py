@@ -21,6 +21,7 @@ from src.stage5_helper import (
     read_rho_edge,
     resolve_pressure_convergence_method,
 )
+from tests.helpers.runs import TRACKED_RUNS
 
 _TEMPLATE = (
     "[geometry]\n"
@@ -360,14 +361,7 @@ def test_profile_arrays_hold_only_numbers(tmp_path: Path, key: str, value: str, 
 
 
 # Every tracked run config must pass the parse-time validation.
-@pytest.mark.parametrize("run", [
-    "quick_run",
-    "w7-x/t3d_benchmark",
-    "w7-x/mhd_on_neoclassical_on",
-    "w7-x/mhd_on_neoclassical_off",
-    "w7-x/mhd_off_neoclassical_on",
-    "w7-x/mhd_off_neoclassical_off",
-])
+@pytest.mark.parametrize("run", TRACKED_RUNS)
 def test_tracked_configs_pass_validation(tmp_path: Path, run: str) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     template = repo_root / "inputs" / run / "common_input.toml"
