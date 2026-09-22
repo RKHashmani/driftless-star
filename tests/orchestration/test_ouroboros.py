@@ -33,7 +33,7 @@ def _write_config(tmp_path: Path, loop: dict | None = None) -> Path:
             "s1_output": "wout_{run_name}.nc",
             "s2_output": "boozmn_{run_name}.nc",
             "s3_config": "sfincs_input.{run_name}",
-            "s3_output": "sfincs_flux.h5",
+            "s3_output": "dkx_flux_profiles.h5",
             "s4_config": "{run_name}.toml",
             "s4_output": "neopax_fluxes.h5",
             "s5_config": "common_input.toml",
@@ -43,6 +43,8 @@ def _write_config(tmp_path: Path, loop: dict | None = None) -> Path:
     }
     if loop is not None:
         config["loop"] = loop
+    (tmp_path / "in").mkdir(exist_ok=True)
+    (tmp_path / "in" / "common_input.toml").write_text("[geometry]\nrho_edge = 1.0\n")
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(config))
     return path
@@ -207,7 +209,7 @@ def test_loop_passes_prescribed_overrides_from_second_iteration(
     assert extras[0] is None
     assert len(extras[1]) == 1
     overrides = yaml.safe_load(extras[1][0].read_text())
-    assert overrides["stage3"]["sfincs_jax"]["profiles_source"] == "prescribed"
+    assert overrides["stage3"]["dkx"]["profiles_source"] == "prescribed"
     assert overrides["stage4"]["gkx"]["profiles_source"] == "prescribed"
     assert "loop" not in overrides
     # The overrides file lives inside the iteration's input dir, alongside the seeded inputs.
@@ -367,7 +369,7 @@ def test_overrides_carry_rerun_flags_and_the_reuse_tree(monkeypatch: pytest.Monk
 
     overrides = _overrides_of_second_iteration(monkeypatch, config_path)
 
-    assert overrides["stage3"]["sfincs_jax"]["profiles_source"] == "prescribed"
+    assert overrides["stage3"]["dkx"]["profiles_source"] == "prescribed"
     assert overrides["stage4"]["gkx"]["profiles_source"] == "prescribed"
     assert overrides["loop"]["rerun"] == {
         "stage1": False, "stage2": False, "stage3": True, "stage4": True, "stage5": True,
@@ -398,7 +400,7 @@ def test_write_loop_overrides_defaults_to_the_prescribed_switch_only(tmp_path: P
     path = ouroboros._write_loop_overrides(tmp_path)
 
     assert yaml.safe_load(path.read_text()) == {
-        "stage3": {"sfincs_jax": {"profiles_source": "prescribed"}},
+        "stage3": {"dkx": {"profiles_source": "prescribed"}},
         "stage4": {"gkx": {"profiles_source": "prescribed"}},
     }
 
@@ -411,3 +413,59 @@ def test_write_loop_overrides_requires_a_reuse_tree_when_a_stage_is_frozen(tmp_p
 
     with pytest.raises(ValueError, match="reuse_output_dir"):
         ouroboros._write_loop_overrides(tmp_path, rerun=flags)
+
+
+@pytest.mark.parametrize("profile_type", ["akima_spline", "cubic_spline", "power_series"])
+def test_main_rejects_truncated_pressure_grid_before_launch(monkeypatch, tmp_path, profile_type):
+    config = _write_config(tmp_path, loop={"pressure_profile_type": profile_type})
+    (tmp_path / "in" / "common_input.toml").write_text("[geometry]\nrho_edge = 0.7\n")
+    monkeypatch.setattr("sys.argv", ["ouroboros", "--config", str(config)])
+    with pytest.raises(ValueError, match="rho_edge = 1"):
+        ouroboros.main()
+    assert not (tmp_path / "out").exists()
+
+
+def test_two_iterations_seed_the_exported_spline(monkeypatch, tmp_path):
+    """Run input copying and pressure export with synthetic transport samples."""
+    import shutil
+    import sys
+    import h5py
+    import numpy as np
+    from tests.helpers.stage_import import load_stage_module
+
+    writer = load_stage_module("stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py")
+    config_path = _write_config(tmp_path, loop={"pressure_profile_type": "akima_spline"})
+    config = yaml.safe_load(config_path.read_text())
+    base = resolve_pipeline_paths(config)
+    Path(base["s1_input"]).write_text("&INDATA\n AM=1\n/\n")
+    for key in ("s3_config", "s4_config"):
+        Path(base[key]).write_text("placeholder\n")
+    consumed = []
+    exported = []
+
+    def forward(*, input_dir, output_dir, target, **kwargs):
+        paths = resolve_pipeline_paths(config, input_dir=input_dir, output_dir=output_dir)
+        consumed.append(Path(paths["s1_input"]).read_text())
+        transport = Path(paths["s5_output"])
+        transport.parent.mkdir(parents=True, exist_ok=True)
+        with h5py.File(transport, "w") as f:
+            f["rho_face"] = np.linspace(0., 1., 6)
+            f["pressure_faces"] = np.array([[3., 2.9, 2.6, 2., 1., .1]])
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        with monkeypatch.context() as context:
+            context.setattr(sys, "argv", ["writer", "write-input", str(transport), paths["s1_input"],
+                                          "--output-input", paths["s1_feedback"],
+                                          "--profile-type", config["loop"]["pressure_profile_type"]])
+            writer.main()
+        exported.append(Path(paths["s1_feedback"]).read_text())
+        shutil.copyfile(paths["s5_config"], paths["s5_config_feedback"])
+        Path(target).write_text(json.dumps({"status": "continue"}))
+
+    monkeypatch.setattr(ouroboros, "run_forward_pass", forward)
+    monkeypatch.setattr(sys, "argv", ["ouroboros", "--config", str(config_path), "--max-iters", "2"])
+    ouroboros.main()
+    assert len(consumed) == 2
+    assert "PMASS_TYPE = 'akima_spline'" in consumed[1]
+    assert "AM_AUX_S" in consumed[1] and "AM_AUX_F" in consumed[1]
+    assert consumed[1] == exported[0]
+    assert exported[1] == exported[0]

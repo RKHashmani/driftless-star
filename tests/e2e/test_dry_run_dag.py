@@ -22,16 +22,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 from src.ouroboros import _write_loop_overrides
-from src.utils import resolve_pipeline_paths
+from src.utils import RESOLVED_COMMON_CONFIG, resolve_pipeline_paths
+from tests.helpers.runs import W7X_RUNS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FORWARD_RULES = (
-    "stage1_vmec",
+    "stage1_vmex",
     "stage2_boozer",
     "stage3_prepare",
     "stage3_collect",
@@ -77,14 +80,31 @@ def _write_convergence_override(tmp_path: Path, method: str) -> str:
     return str(path)
 
 
-# This runs the default forward pass and asserts it plans successfully (exit code 0), that every stage rule visible
-# before the checkpoints run is scheduled (including both deferred collect gathers), and that the post-processing rule
-# is NOT scheduled, because the default target is a pure forward pass with no loop-closing step. This catches Snakefile
-# wiring/parse errors without Docker.
-def test_forward_pass_dag_dry_run(tmp_path: Path) -> None:
-    result = _dry_run(tmp_path, targets=[], config_overrides=[])
+# The test plans the forward pass with the default and a custom neoclassical filename.
+# The plan includes every rule visible before the checkpoints run, including the deferred collection rules.
+# The default target excludes the loop's post-processing rule.
+@pytest.mark.parametrize("custom_output", [False, True], ids=["default", "custom-filename"])
+def test_forward_pass_dag_dry_run(tmp_path: Path, custom_output: bool) -> None:
+    extra_configfiles = []
+    filename = "dkx_flux_profiles.h5"
+    if custom_output:
+        filename = "custom_dkx_flux.h5"
+        overrides = tmp_path / "flux-filename.yaml"
+        overrides.write_text(yaml.safe_dump({"filenames": {"s3_output": filename}}))
+        extra_configfiles.append(str(overrides))
+    result = _dry_run(tmp_path, targets=[], config_overrides=[],
+                      extra_configfiles=extra_configfiles, printshellcmds=True)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
+    stage1_command = next(line for line in output.splitlines() if "run_vmex.py" in line)
+    assert all(flag in stage1_command for flag in ("run_vmex.py --input", "--output", "--device cpu")), output
+    stage3_prepare = next(line for line in output.splitlines() if "dkx_radial_scan.py prepare" in line)
+    assert "stage-3-dkx-cpu" in stage3_prepare, output
+    assert "--dkx-template" in stage3_prepare, output
+    stage3_collect = next(line for line in output.splitlines() if "dkx_radial_scan.py collect" in line)
+    assert f"--output {tmp_path}/out/stage3_neoclassical/{filename}" in stage3_collect, output
+    resolved = (tmp_path / "out/stage5_transport" / RESOLVED_COMMON_CONFIG).read_text()
+    assert f'neoclassical_file = "../stage3_neoclassical/{filename}"' in resolved, resolved
     for rule in FORWARD_RULES:
         assert rule in output, f"rule {rule} not scheduled:\n{output}"
     assert "stage5_post_processing" not in output  # rule all is a pure forward pass
@@ -93,6 +113,30 @@ def test_forward_pass_dag_dry_run(tmp_path: Path) -> None:
     for rule in DEFERRED_RULES:
         assert rule not in output, f"per-surface rule {rule} planned before its checkpoint ran:\n{output}"
     assert "checkpoint jobs" in output, output
+
+
+@pytest.mark.parametrize(("run", "stage3_enabled"), [(run, run.endswith("neoclassical_on")) for run in W7X_RUNS])
+def test_w7x_forward_pass_dag_dry_run(tmp_path: Path, run: str, stage3_enabled: bool) -> None:
+    """W7-X runs schedule DKX only when neoclassical transport is enabled."""
+    result = _dry_run(tmp_path, targets=[], config_overrides=[], configfile=f"inputs/{run}/config.yaml",
+                      printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    for rule in FORWARD_RULES:
+        expected = stage3_enabled or not rule.startswith("stage3_")
+        assert (rule in output) == expected, f"rule {rule} scheduling mismatch:\n{output}"
+    resolved = tomllib.loads((tmp_path / "out/stage5_transport" / RESOLVED_COMMON_CONFIG).read_text())
+    if stage3_enabled:
+        assert "stage-3-dkx-gpu" in output, output
+        assert resolved["neoclassical"]["flux_model"] == "dkx_fluxes_r_file"
+        assert resolved["neoclassical"]["neoclassical_file"] == "../stage3_neoclassical/dkx_flux_profiles.h5"
+    else:
+        assert "Stage 3 is skipped" in output, output
+        assert "dkx_radial_scan.py" not in output, output
+        assert "stage3_neoclassical" not in output, output
+        assert not (tmp_path / "out/stage3_neoclassical").exists()
+        assert resolved["neoclassical"]["flux_model"] == "none"
+        assert resolved["neoclassical"].get("neoclassical_file", "") == ""
 
 
 # When you explicitly ask Snakemake to build the convergence-signal file (the loop-closing target), the post-processing
@@ -188,7 +232,8 @@ def test_apptainer_runtime_plans_native_gpu_image_and_absolute_binds(tmp_path: P
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert "apptainer run --unsquash --nv" in output, output
-    assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-1-vmec-gpu' in output, output
+    assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-1-vmex-gpu' in output, output
+    assert 'oras://ghcr.io/driftless-star/driftless-star:apptainer-stage-3-dkx-gpu' in output, output
     assert f'--bind "{tmp_path}/out:{tmp_path}/out"' in output, output
     assert "docker run" not in output, output
 
@@ -237,6 +282,10 @@ def test_perturbed_manifest_expands_fan_out(tmp_path: Path) -> None:
         os.utime(artifact, (newest_input + 100, newest_input + 100))
     manifest = Path(paths["stage4_manifest"])
     manifest.parent.mkdir(parents=True, exist_ok=True)
+    for surface in ("rho_001_r0p2500", "rho_001_r0p2500_fd_n_D"):
+        runtime_input = manifest.parent / "runs" / surface / "input.toml"
+        runtime_input.parent.mkdir(parents=True, exist_ok=True)
+        runtime_input.write_text("[physics]\nbeta = 0.0\n")
     manifest.write_text(
         json.dumps(
             {
@@ -253,6 +302,74 @@ def test_perturbed_manifest_expands_fan_out(tmp_path: Path) -> None:
     assert result.returncode == 0, output
     assert "stage4_run_one" in output, output
     assert "rho_001_r0p2500_fd_n_D" in output, output
+
+
+def _prepared_stage4_surface(tmp_path: Path) -> tuple[dict, Path]:
+    """Write the artifacts needed to expand a prepared Stage 4 checkpoint."""
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    paths = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/out")
+    for key in ("s1_output", "s2_output"):
+        artifact = Path(paths[key])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("prepared equilibrium\n")
+    run_dir = Path(paths["stage4_dir"]) / "runs" / "rho_001_r0p2500"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "input.toml").write_text("[physics]\nbeta = 0.0\n")
+    Path(paths["stage4_manifest"]).write_text(json.dumps({
+        "schema_version": 3, "runs": [{"run_dir": str(run_dir)}],
+    }))
+    (run_dir / "run.diagnostics.csv").write_text("t,heat_flux,particle_flux\n1,2,3\n")
+    return paths, run_dir
+
+
+def test_stage4_existing_diagnostics_without_completion_schedules_worker(tmp_path: Path) -> None:
+    paths, run_dir = _prepared_stage4_surface(tmp_path)
+    result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "rule stage4_run_one:" in output, output
+    assert str(run_dir / "run.completion.json") in output, output
+    assert "Missing output files" in output, output
+
+
+def test_stage4_runtime_input_edit_schedules_worker(tmp_path: Path) -> None:
+    paths, run_dir = _prepared_stage4_surface(tmp_path)
+    (run_dir / "run.completion.json").write_text("{}\n")
+    result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "rule stage4_run_one:" not in output, output
+    runtime_input = run_dir / "input.toml"
+    runtime_input.write_text("[physics]\nbeta = 0.05\n")
+    newer = (run_dir / "run.completion.json").stat().st_mtime + 2.0
+    os.utime(runtime_input, (newer, newer))
+    result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "rule stage4_run_one:" in output, output
+    assert str(runtime_input) in output, output
+    assert "Updated input files" in output, output
+
+
+def test_frozen_stage4_reuses_flux_without_surface_completion_markers(tmp_path: Path) -> None:
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    reuse = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/reuse")
+    for key in ("s1_output", "s2_output", "s3_output", "s4_output"):
+        artifact = Path(reuse[key])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("frozen artifact\n")
+    overrides = _write_loop_overrides(
+        tmp_path,
+        rerun={"stage1": False, "stage2": False, "stage3": False, "stage4": False, "stage5": True},
+        reuse_output_dir=reuse["output_dir"],
+    )
+    result = _dry_run(tmp_path, targets=[], config_overrides=[], extra_configfiles=[str(overrides)])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    for rule in ("stage4_prepare", "stage4_run_one", "stage4_collect"):
+        assert f"rule {rule}:" not in output, output
+    assert "rule stage5_neopax:" in output, output
+    assert reuse["s4_output"] in output, output
 
 
 # From iteration 2 with frozen stages, the driver's overrides file names the iteration 1 tree and restates the validated
@@ -282,7 +399,7 @@ def test_frozen_stages_absent_from_plan(tmp_path: Path) -> None:
         assert rule in output, f"rule {rule} not scheduled:\n{output}"
     # The Stage 2 output directory is also named stage2_boozer, and it legitimately appears in the reuse-tree paths
     # of the planned commands, so frozen rules are matched against the job header form instead of the bare name.
-    for rule in ("rule stage1_vmec:", "rule stage2_boozer:"):
+    for rule in ("rule stage1_vmex:", "rule stage2_boozer:"):
         assert rule not in output, f"frozen {rule.rstrip(':')} scheduled:\n{output}"
     # The composed commands must consume the frozen artifacts from the reuse tree, not the current output tree.
     assert reuse["s1_output"] in output, output
@@ -325,7 +442,7 @@ def test_frozen_stage3_keeps_iter1_provenance(tmp_path: Path) -> None:
     assert output.count("--profiles-source prescribed") == 1, output
     assert "--profiles-source analytical" not in output, output
     resolved = Path(paths_out["s5_resolved_config"]).read_text()
-    assert 'neoclassical_file = "../../reuse/stage3_neoclassical/sfincs_jax_flux_profiles.h5"' in resolved, resolved
+    assert 'neoclassical_file = "../../reuse/stage3_neoclassical/dkx_flux_profiles.h5"' in resolved, resolved
 
 
 # The rerun flags are validated at Snakefile parse time even without a reuse tree, so a hand-edited config freezing a
@@ -366,4 +483,67 @@ def test_reuse_tree_with_all_frozen_fails_at_parse(tmp_path: Path) -> None:
     result = _dry_run(tmp_path, targets=[], config_overrides=[], extra_configfiles=[str(overrides)])
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
-    assert "freezes every stage" in output, output
+    assert "freezes every enabled stage" in output, output
+
+
+@pytest.mark.parametrize("frozen,profile_type", [
+    (False, None), (False, "akima_spline"), (False, "cubic_spline"), (False, "power_series"),
+    (True, "akima_spline"),
+])
+def test_quick_run_pressure_feedback_command(tmp_path, frozen, profile_type):
+    override = tmp_path / "pressure.yaml"
+    loop = {"rerun": {"stage1": not frozen}}
+    if profile_type is not None:
+        loop["pressure_profile_type"] = profile_type
+    override.write_text(yaml.safe_dump({"loop": loop}))
+    result = _dry_run(tmp_path, targets=[f"{tmp_path}/out/stage5_post_processing/converge_status.json"],
+                      config_overrides=[], extra_configfiles=[str(override)], printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "stage1_vmex" in output  # Even a frozen stage must run on iteration 1.
+    if frozen:
+        assert "Pressure export skipped" in output
+        assert "fit_vmec_pressure_from_transport_h5.py" not in output
+    else:
+        assert f"--profile-type {profile_type or 'power_series'}" in output
+        assert "Pressure export skipped" not in output
+
+
+def test_profile_parameter_settings_survive_loop_override(tmp_path: Path) -> None:
+    enabled = tmp_path / "profile-parameters.yaml"
+    enabled.write_text(yaml.safe_dump({"stage4": {"gkx": {
+        "beta_source": "profiles", "collisionality_source": "profiles",
+        "collisionality_scaling_factor": 0.25,
+    }}}))
+    loop_override = _write_loop_overrides(tmp_path)
+    result = _dry_run(tmp_path, targets=[], config_overrides=[],
+                      extra_configfiles=[str(enabled), str(loop_override)], printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    command = next(line for line in output.splitlines() if "gkx_radial_scan.py prepare" in line)
+    for value in ("--profiles-source prescribed", "--beta-source profiles",
+                  "--collisionality-source profiles", "--collisionality-scaling-factor 0.25"):
+        assert value in command
+
+
+def test_dkx_response_manifest_schedules_every_sibling(tmp_path: Path) -> None:
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    paths = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/out")
+    for key in ("s1_output", "s2_output"):
+        artifact = Path(paths[key])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("")
+    manifest = Path(paths["stage3_manifest"])
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    surfaces = [
+        f"rho_{idx:03d}_r{rho}{suffix}"
+        for idx, rho in [(1, "0p2500"), (2, "0p5000")]
+        for suffix in ("", "_fd_n_D", "_fd_t_D")
+    ]
+    manifest.write_text(json.dumps({"runs": [{"run_subdir": surface} for surface in surfaces]}))
+    result = _dry_run(tmp_path, targets=[paths["s3_output"]], config_overrides=[])
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert output.count("rule stage3_run_one:") == len(surfaces), output
+    for surface in surfaces:
+        assert f"{surface}/result.json" in output, output

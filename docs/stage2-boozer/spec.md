@@ -87,7 +87,7 @@ Reference: `stellarator_io_reference.tex`, Section 3.2.
 
 ### Subset Handed to Next Stage
 
-`NEO` and `NEO_JAX` need the Boozer spectrum and radial profiles. `SFINCS`/`sfincs_jax` use the same Boozer geometry. `NEOPAX` uses the Boozer spectrum through direct field or file readers.
+`NEO` and `NEO_JAX` need the Boozer spectrum and radial profiles. The forward-pass DKX solver uses VMEC geometry. Its radial scan reads the Boozer output to reconstruct analytical profiles on NEOPAX's minor radius. `NEOPAX` uses the Boozer spectrum through direct field or file readers.
 
 ### Outputs Used as Objectives
 
@@ -164,7 +164,7 @@ pixi run -e stage-2-booz-jax stage-2-booz
 ```
 
 > [!NOTE]
-> The Stage 2 JAX driver now takes explicit `--wout` and `--output` paths. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run stage-1-vmec` first.
+> The Stage 2 JAX driver now takes explicit `--wout` and `--output` paths. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run stage-1-vmex` first.
 
 **Input:** `outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc` (from Stage 1)
 **Output:** `outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc`

@@ -1,15 +1,16 @@
 # driftless-star pipeline run configuration.
 # CLI overrides `snakemake --config key=value` beat any value here.
+# Stage 3 or 4 is skipped when its flux_model is "none" in common_input.toml.
 
 # Independent of the input_dir/output_dir folder name; describes the physics case.
 run_name: HSX_vacuum_ns201_quickrun
 
 # Container runtime GPU pool. One of:
 # null: run every stage on CPU images with no GPU access.
-# "all": run GPU images, pinning each concurrent job to one free GPU of the execution host
-# ids e.g. "4,5,6,7": run GPU images with each concurrent job pinned to one free id from the pool.
+# "all": run GPU images, pinning each concurrent solver job to one free GPU of the execution host
+# ids e.g. "4,5,6,7": run GPU images with each concurrent solver job pinned to one free id from the pool.
 gpu_ids: null
-# Concurrent jobs allowed per GPU.
+# Concurrent solver jobs allowed per GPU.
 jobs_per_gpu: 1
 
 
@@ -22,7 +23,7 @@ filenames:
   s1_output: wout_{run_name}.nc
   s2_output: boozmn_{run_name}.nc
   s3_config: sfincs_input.{run_name}   # Stage 3 SFINCS namelist
-  s3_output: sfincs_jax_flux_profiles.h5
+  s3_output: dkx_flux_profiles.h5
   s4_config: "{run_name}.toml"         # Stage 4 GKX template
   s4_output: neopax_fluxes.h5
   s5_config: common_input.toml         # shared by Stages 3, 4, 5
@@ -39,6 +40,8 @@ convergence:
 # Per-stage rerun flags for the ouroboros closed-loop driver, where a stage set to false
 # is frozen and loop iterations after the first reuse its iteration 1 output.
 loop:
+  # Pressure feedback for VMEX. Accepts akima_spline, cubic_spline, and power_series.
+  pressure_profile_type: power_series
   rerun:
     stage1: true
     stage2: true
@@ -46,10 +49,10 @@ loop:
     stage4: true
     stage5: true
 
-# Stage 3 SFINCS (sfincs_jax) radial scan.
+# Stage 3 DKX radial scan.
 # Surface-level concurrency is controlled by `snakemake --cores`.
 stage3:
-  sfincs_jax:
+  dkx:
     # --- Profile source ---
     # Options include:
     # "analytical": built from the analytical parameters in common_input.toml [profiles],
@@ -70,6 +73,24 @@ stage3:
     # rho_max: 0.9            # upper edge of the rho window
     # rho_indices: "1,5,10"   # comma-separated explicit indices instead of the full grid
 
+    # --- Neoclassical response (perturbed fluxes) ---
+    # response_mode `fd_gradients` adds one perturbed sibling run per listed (channel,
+    # species) pair per flux surface. N surfaces and P distinct pairs give N * (1 + P)
+    # Stage 3 jobs. `none` (or leaving the key unset) runs baseline fluxes only.
+    # response_mode: none
+    # Species to perturb per channel are comma-separated quoted names drawn from the
+    # configured species (e, D, T). Matching ignores case and keeps configured spelling.
+    # Repeated names are removed per channel. Unknown names cause preparation to fail.
+    # Both lists default to empty. fd_gradients requires at least one selected species.
+    # perturb_density_species: "D"       # density-gradient channel
+    # perturb_temperature_species: "D"   # temperature-gradient channel
+    # Perturbation parameters default to 0.5 under fd_gradients mode when left unset.
+    # Step magnitude is max(dkap_<channel>, perturb_rel_step * abs(kappa)).
+    # Density steps are negative and preserve pressure gradient. Temperature steps are positive.
+    # dkap_density: 0.5
+    # dkap_temperature: 0.5
+    # perturb_rel_step: 0.5
+
     # --- Resolution ---
     ntheta: 5
     nzeta: 11
@@ -85,6 +106,16 @@ stage3:
 # Surface-level concurrency is controlled by `snakemake --cores`.
 stage4:
   gkx:
+    # Parameter sources
+    # "fixed": uses beta from the CLI or template and fixed species collision frequencies.
+    # "profiles": calculates the parameter from NEOPAX density and temperature profiles and VMEC geometry.
+    # With beta_source: profiles, enable electromagnetic physics and the desired fields
+    # in the GKX template to use the calculated beta.
+    beta_source: fixed
+    collisionality_source: fixed
+    # Multiply profile collision frequencies by this nonnegative value.
+    # Zero disables collisions.
+    collisionality_scaling_factor: 1.0
     # --- Profile source ---
     # Options include:
     # "analytical": built from the analytical parameters in common_input.toml [profiles],

@@ -42,6 +42,9 @@ _scan = load_stage_module(_STAGE4_SCRIPT)
 # scan-level flags. The t_max key is deliberately spelled --t-final, the prepare
 # parser's alias whose argparse dest is t_max.
 _PREPARE_OPTIONALS: list[tuple[str, str, object]] = [
+    ("beta_source", "--beta-source", "profiles"),
+    ("collisionality_source", "--collisionality-source", "profiles"),
+    ("collisionality_scaling_factor", "--collisionality-scaling-factor", 0.5),
     ("profiles_source",               "--profiles-source",               "prescribed"),  # the loop's iteration-2+ value, not the default
     ("neopax_result",                 "--neopax-result",                 "stage5_transport/transport_solution.h5"),
     ("nx",                            "--nx",                            12),
@@ -70,8 +73,6 @@ _FULL_CFG: dict = {key: value for key, _, value in _PREPARE_OPTIONALS} | {
     "average_window": 1.0,
     "average_reducer": "t3d_median",
     "gpu_ids": "0,1",
-    "plot": False,
-    "plot_run_heat_traces": True,
     "verbose_workers": True,
     "max_parallel": 1,
     "collect_even_if_failures": True,
@@ -191,22 +192,6 @@ def test_collect_average_reducer_emitted_exactly_once() -> None:
     assert "--average-reducer" not in compose(collect_cmd, stage_cfg={})
 
 
-# Plot toggles live on `collect` and are tri-state: True emits the on-flag, False the off-flag, absent emits neither.
-# Token membership so a short flag like --plot is not falsely found inside --no-plot or --plot-run-heat-traces.
-@pytest.mark.parametrize(
-    "key, on, off",
-    [
-        ("plot", "--plot", "--no-plot"),
-        ("plot_run_heat_traces", "--plot-run-heat-traces", "--no-plot-run-heat-traces"),
-    ],
-)
-def test_collect_plot_tristates(key: str, on: str, off: str) -> None:
-    assert on in compose(collect_cmd, stage_cfg={key: True}).split()
-    assert off in compose(collect_cmd, stage_cfg={key: False}).split()
-    absent = compose(collect_cmd, stage_cfg={}).split()
-    assert on not in absent and off not in absent
-
-
 # The run-one worker's --verbose-worker is a plain store_true with no negative form, unlike the tri-state toggles: only
 # an explicit config True emits it, while False and an absent key both emit nothing and leave the worker at its quiet
 # default. This asymmetry is asserted explicitly.
@@ -257,7 +242,6 @@ def test_collect_flags_parse_and_dispatch_to_cmd_collect() -> None:
     assert args.out == "outputs/quick_run/stage4_turbulence/flux_summary.h5"
     assert args.neopax_flux_out == "outputs/quick_run/stage4_turbulence/neopax_fluxes.h5"
     assert args.t_final is None
-    assert args.plot is False
     assert args.average_reducer == "t3d_median"
 
 

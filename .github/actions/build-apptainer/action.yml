@@ -3,10 +3,10 @@ description: Build and optionally push an Apptainer container image for a Pixi e
 
 inputs:
   environment:
-    description: Pixi environment name (e.g., stage-1-vmec, stage-1-vmec-gpu)
+    description: Pixi environment name (e.g., stage-1-vmex, stage-1-vmex-gpu)
     required: true
   image-tag:
-    description: Image tag suffix (e.g., stage-1-vmec-cpu, stage-1-vmec-gpu)
+    description: Image tag suffix (e.g., stage-1-vmex-cpu, stage-1-vmex-gpu)
     required: true
   cuda-version:
     description: CUDA version for GPU builds (leave empty for CPU builds)

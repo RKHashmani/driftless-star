@@ -61,21 +61,31 @@ pixi run driftless-star-fwd \
 
 ### The W7-X runs
 
-`inputs/w7-x_quick_run/` and `inputs/w7-x_t3d_validation/` use the same HTCondor profile as `quick_run`. Their Stage 3 SFINCS namelist is not committed. Put `sfincs_input.w7x_t3d_reconstruction` in the selected staging input directory before you submit the run. Otherwise, `stage3_prepare` fails.
+The five [comparison cases](../../inputs/w7-x/) under `inputs/w7-x/` use the same HTCondor profile as `quick_run`. The neoclassical-on comparison bundles include their Stage 3 SFINCS-format namelist for DKX. The neoclassical-off bundles omit it.
 
-Edit the selected staging `config.yaml` so that `input_dir` and `output_dir` are absolute paths. Then start the closed-loop validation run from the repository root:
+Copy the selected bundle to staging, keeping the `inputs/w7-x/<case>/` layout. Edit its staged `config.yaml` so that `input_dir` and `output_dir` are absolute paths under `$RUN_ROOT`. For `t3d_benchmark`, use the staged `inputs/w7-x/t3d_benchmark` and `outputs/w7-x/t3d_benchmark` directories.
+
+For a fresh benchmark run, copy the supplied equilibrium into the first iteration's Stage 1 output directory. Use an ordinary copy without preserving its original modification time.
+
+```sh
+mkdir -p "$RUN_ROOT/outputs/w7-x/t3d_benchmark/loop/iter_1/output/stage1_equilibrium"
+cp "$RUN_ROOT/inputs/w7-x/t3d_benchmark/wout_w7x_t3d_reconstruction.nc" \
+    "$RUN_ROOT/outputs/w7-x/t3d_benchmark/loop/iter_1/output/stage1_equilibrium/wout_w7x_t3d_reconstruction.nc"
+```
+
+The [benchmark instructions](../../inputs/w7-x/t3d_benchmark/README.md) show the same placement for a local run. Start the staged loop from the repository root.
 
 ```
 pixi run driftless-star \
-    --config $RUN_ROOT/inputs/w7-x_t3d_validation/config.yaml \
+    --config "$RUN_ROOT/inputs/w7-x/t3d_benchmark/config.yaml" \
     --profile executors/htcondor/profiles/htcondor-gpu \
     --container-runtime apptainer --gpu-ids all \
-    --max-iters 10 --cores 8
+    --max-iters 400 --cores 8
 ```
 
-Use `--gpu-ids all` for both W7-X configurations. The quick configuration already uses `all`, but the validation configuration lists local device IDs. Those IDs do not identify HTCondor execute nodes. In Apptainer mode, this option selects the GPU images and records the effective cluster configuration.
+Use `--gpu-ids all` on HTCondor. The five comparison configs already select `all`. In Apptainer mode, this option selects the GPU images and records the effective cluster configuration.
 
-The W7-X runs queue more work than `quick_run`. The W7-X quick run has 9 transport cells and 10 faces. Stages 3 and 4 scan its 9 non-axis faces. This produces 9 SFINCS jobs and 18 GKX jobs in iteration 1. The validation run has 8 cells and 9 faces. It scans 8 non-axis faces and produces 8 SFINCS jobs and 16 GKX jobs. Its 8 SFINCS jobs run in iteration 1 only, because its run config freezes Stages 1 through 3 after the first iteration. Later iterations queue Stages 4 and 5 alone. The quick run instead reruns every stage each iteration. Each GKX count includes one base run and one temperature-gradient perturbation for each face. The profile permits 8 concurrent jobs, so it submits these jobs in multiple waves.
+Each comparison case scans 8 non-axis faces and produces 16 GKX jobs per iteration. The neoclassical-on cases also produce 16 DKX jobs per iteration, including gradient perturbations. The neoclassical-off cases skip Stage 3 in every iteration. The benchmark and both MHD-off cases freeze Stages 1 and 2 after iteration 1. The MHD-on cases rerun every enabled stage. The profile permits 8 concurrent jobs, so it submits these jobs in multiple waves.
 
 ### Recovering a stuck run
 
@@ -107,7 +117,7 @@ Each job's `.err` opens with `[job_wrapper]` diagnostics naming the Snakemake it
 
 ## Further Explanation
 
-The parent image built from `apptainer.def` exists only to give remote HTCondor jobs a stable runtime. Inside it, the workflow launches the stage-specific images for VMEC, BOOZ_XFORM, SFINCS, GKX, and NEOPAX.
+The parent image built from `apptainer.def` exists only to give remote HTCondor jobs a stable runtime. Inside it, the workflow launches the stage-specific images for VMEX, BOOZ_XFORM, DKX, GKX, and NEOPAX.
 
 So the layering is:
 
@@ -126,7 +136,7 @@ Because the executor does not ship Snakemake to the node (it is baked into the p
   Builds `htcondor-runtime.sif` from the root workspace's `htcondor-runtime` environment. That environment carries Snakemake and nothing else: the executor rewrites every remote job into a plain `snakemake --mode remote ...` with no `--executor` flag, so the plugin itself is only ever needed on the submit host. The image additionally installs `apptainer` and `git` globally, since it launches the nested stage containers.
 
 - `profiles/htcondor-gpu/`
-  An example profile, as used on CHTC: `universe=container` with the parent image, one GPU per job, and `/staging` treated as shared rather than transferred. This is the one the commands above use; another pool needs its own `requirements` ClassAd and shared-FS prefixes.
+  An example profile, as used on CHTC: `universe=container` with the parent image, one GPU per solver job, CPU-only preparation, collection, and post-processing, and `/staging` treated as shared rather than transferred. This is the one the commands above use; another pool needs its own `requirements` ClassAd and shared-FS prefixes.
 
 - `job_wrapper.sh`
   Used by the GPU profile as the job executable. The executor hands it the Snakemake arguments with the `python -m snakemake` prefix stripped, and the wrapper runs them with the parent image's one Snakemake, `/app/.pixi/envs/htcondor-runtime/bin/snakemake`. There is no `PATH` fallback: if that path is missing, it dumps diagnostics to stderr and exits non-zero.

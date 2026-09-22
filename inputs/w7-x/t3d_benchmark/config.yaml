@@ -1,0 +1,48 @@
+# Initial settings from the completed run.
+run_name: w7x_t3d_reconstruction
+gpu_ids: all
+jobs_per_gpu: 4
+input_dir: inputs/w7-x/t3d_benchmark
+output_dir: outputs/w7-x/t3d_benchmark
+filenames:
+  s1_input: vmec_input.{run_name}
+  s1_output: wout_{run_name}.nc
+  s2_output: boozmn_{run_name}.nc
+  s4_config: '{run_name}.toml'
+  s4_output: neopax_fluxes.h5
+  s5_config: common_input.toml
+  s5_output: transport_solution.h5
+  s5_signal: converge_status.json
+convergence:
+  method: pointwise
+  pressure_rel_tol: 1.0e-12
+loop:
+  rerun:
+    stage1: false
+    stage2: false
+    stage3: false
+    stage4: true
+    stage5: true
+stage4:
+  neopax_radius_relabel: boozer_volume
+  gkx:
+    profiles_source: analytical
+    neopax_result: null
+    analytical_n_radii: null
+    nx: 64
+    ny: 64
+    ntheta: 64
+    t_max: 1000.0
+    average_window: 100
+    average_reducer: t3d_median
+    sample_stride: 50
+    diagnostics_stride: 1
+    resolved_diagnostics: false
+    response_mode: fd_gradients
+    perturb_temperature_species: ion
+    dkap_density: 0.5
+    dkap_temperature: 0.5
+    perturb_rel_step: 0.5
+    plot: true
+    plot_run_heat_traces: true
+    verbose_workers: true

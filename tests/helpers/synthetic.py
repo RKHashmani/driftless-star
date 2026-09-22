@@ -103,15 +103,16 @@ def write_transport_solution(
     return path
 
 
-def write_sfincs_flux(
+def write_dkx_flux(
     path: Path,
     *,
     rho: np.ndarray,
     gamma: np.ndarray,
     q: np.ndarray,
     upar: np.ndarray | None = None,
+    axis_zero_padded: bool = False,
 ) -> Path:
-    """Write a synthetic ``sfincs_jax_flux_profiles.h5`` neoclassical flux file.
+    """Write a synthetic ``dkx_flux_profiles.h5`` neoclassical flux file.
 
     Parameters
     ----------
@@ -123,6 +124,8 @@ def write_sfincs_flux(
         Particle and heat flux, shape ``(n_species, n_radii)`` with three species.
     upar : np.ndarray, optional
         Parallel flow, shape ``(n_species, n_radii)``; defaults to zeros.
+    axis_zero_padded : bool, optional
+        Whether the supplied arrays include an added zero column at the magnetic axis.
 
     Returns
     -------
@@ -131,8 +134,9 @@ def write_sfincs_flux(
 
     Notes
     -----
-    The ``species_names`` dataset (``e``, ``D``, ``T``) and the ``axis_zero_padded`` root
-    attribute are written with fixed values because the contract validator consumes them.
+    The ``species_names`` dataset contains ``e``, ``D``, and ``T``.
+    The helper marks the file as padded only when the caller sets
+    ``axis_zero_padded`` to ``True``.
     """
     rho_arr = np.asarray(rho, dtype=float)
     gamma_arr = np.asarray(gamma, dtype=float)
@@ -146,7 +150,7 @@ def write_sfincs_flux(
         f.create_dataset("Q", data=q_arr)
         f.create_dataset("Upar", data=upar_arr)
         f.create_dataset("species_names", data=np.asarray([b"e", b"D", b"T"]))
-        f.attrs["axis_zero_padded"] = False
+        f.attrs["axis_zero_padded"] = axis_zero_padded
     return path
 
 
@@ -206,8 +210,9 @@ def write_wout(path: Path, *, omit: Sequence[str] = ()) -> Path:
     Mirrors the real VMEC layout: the shape coefficients ``rmnc``/``zmns``/``lmns`` sit on
     the ``mn_mode`` grid (indexed by ``xm``/``xn``) and the field-strength coefficients
     ``bmnc``/``bsubumnc``/``bsubvmnc`` on the denser ``mn_mode_nyq`` grid (indexed by
-    ``xm_nyq``/``xn_nyq``), which is why the two mode dimensions differ in size. A scalar
-    ``Aminor_p`` supplies the minor radius the Stage 4 reader needs.
+    ``xm_nyq``/``xn_nyq``), which is why the two mode dimensions differ in size.
+    Stage 4 normalization uses the scalar ``Aminor_p`` for the minor radius
+    and the scalar ``b0`` for the magnetic field.
 
     Parameters
     ----------
@@ -252,6 +257,8 @@ def write_wout(path: Path, *, omit: Sequence[str] = ()) -> Path:
             ds.createVariable("nfp", "i4")[...] = 1
         if "Aminor_p" not in omit:
             ds.createVariable("Aminor_p", "f8")[...] = 0.3
+        if "b0" not in omit:
+            ds.createVariable("b0", "f8")[...] = 2.5
     return path
 
 

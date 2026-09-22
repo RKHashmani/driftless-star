@@ -1,6 +1,6 @@
 """Tests for the ``src.stage3_helper`` per-phase command composers.
 
-``prepare_cmd``, ``run_one_cmd``, and ``collect_cmd`` turn the ``stage3.sfincs_jax``
+``prepare_cmd``, ``run_one_cmd``, and ``collect_cmd`` turn the ``stage3.dkx``
 config block into the three shell commands that the Snakefile's per-phase Stage 3
 rules run. The exact strings are the contract with those rules, so this pins them:
 the static base flags (including the literal ``{input.*}`` and ``{wildcards.surf}``
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import re
+import shlex
 from collections.abc import Callable
 
 import pytest
@@ -22,34 +23,41 @@ import pytest
 from src.stage3_helper import collect_cmd, prepare_cmd, run_one_cmd
 from tests.helpers.stage_import import load_stage_module
 
-_STAGE3_SCRIPT = "stages/stage3-neoclassical/sfincs_jax_radial_scan.py"
+_STAGE3_SCRIPT = "stages/stage3-neoclassical/dkx_radial_scan.py"
 # Snakemake substitutes {input.*}/{output.*} at run time; swap them for literal path
 # tokens so the emitted command parses as a plain argument vector here.
-_PLACEHOLDER = re.compile(r"\{(?:input|output)\.[A-Za-z0-9_]+\}")
+_PLACEHOLDER = re.compile(r"\{(?:input|output)\.[A-Za-z0-9_]+(?::q)?\}")
 _scan = load_stage_module(_STAGE3_SCRIPT)
 
 # Every prepare-phase optional key with a quick-run-like value, used both to exercise
 # each flag individually and to prove that a fully-populated config never leaks
 # scan-level parallelism flags. max_parallel and gpu_ids are retired keys that older
 # configs may still carry; every composer must ignore them.
+# Prescribed profiles represent iteration 2 onward, after transport feedback.
 _PREPARE_OPTIONALS: list[tuple[str, str, object]] = [
-    ("profiles_source",    "--profiles-source",    "prescribed"),  # the loop's iteration-2+ value, not the default
-    ("neopax_result",      "--neopax-result",      "outputs/quick_run/stage5_transport/transport_solution.h5"),
-    ("ntheta",             "--ntheta",             5),
-    ("nzeta",              "--nzeta",              11),
-    ("nxi",                "--nxi",                12),
-    ("nx",                 "--nx",                 4),
-    ("solver_tolerance",   "--solver-tolerance",   1e-06),
-    ("analytical_n_radii", "--analytical-n-radii", 51),
-    ("rho_indices",        "--rho-indices",        "1,5,10"),
-    ("rho_min",            "--rho-min",            0.1),
-    ("rho_max",            "--rho-max",            0.9),
-    ("num_radii",          "--num-radii",          4),
+    ("profiles_source",             "--profiles-source",             "prescribed"),
+    ("neopax_result",               "--neopax-result",
+     "outputs/quick_run/stage5_transport/transport_solution.h5"),
+    ("ntheta",                      "--ntheta",                      5),
+    ("nzeta",                       "--nzeta",                       11),
+    ("nxi",                         "--nxi",                         12),
+    ("nx",                          "--nx",                          4),
+    ("solver_tolerance",            "--solver-tolerance",            1e-06),
+    ("analytical_n_radii",          "--analytical-n-radii",          51),
+    ("rho_indices",                 "--rho-indices",                 "1,5,10"),
+    ("rho_min",                     "--rho-min",                     0.1),
+    ("rho_max",                     "--rho-max",                     0.9),
+    ("num_radii",                   "--num-radii",                   4),
+    ("response_mode",               "--response-mode",               "fd_gradients"),
+    ("perturb_density_species",     "--perturb-density-species",     "D,e"),
+    ("perturb_temperature_species", "--perturb-temperature-species", "D"),
+    ("dkap_density",                "--dkap-density",                0.25),
+    ("dkap_temperature",            "--dkap-temperature",            0.75),
+    ("perturb_rel_step",            "--perturb-rel-step",            0.1),
 ]
 
 _FULL_CFG: dict = {key: value for key, _, value in _PREPARE_OPTIONALS} | {
     "gpu_ids": "0,1",
-    "plot": False,
     "verbose_workers": True,
     "max_parallel": 8,
 }
@@ -63,9 +71,10 @@ def compose(composer: Callable[..., str], **overrides) -> str:
     """
     base = dict(
         docker_prefix="docker run --rm",
-        image="ghcr.io/driftless-star/driftless-star:stage-3-sfincs-cpu",
+        image="ghcr.io/driftless-star/driftless-star:stage-3-dkx-cpu",
         stage_cfg={},
         output_dir="outputs/quick_run/stage3_neoclassical",
+        output_file="outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5",
         device="cpu",
     )
     base.update(overrides)
@@ -79,7 +88,7 @@ def parse_with_stage_script(command: str) -> argparse.Namespace:
     Fails the test if argparse rejects any flag (argparse exits via ``sys.exit(2)``).
     """
     concrete = _PLACEHOLDER.sub("placeholder_path", command).replace("{wildcards.surf}", "rho_001_r0p1000")
-    tokens = concrete.split()
+    tokens = shlex.split(concrete)
     argv = tokens[tokens.index(_STAGE3_SCRIPT) + 1:]
     try:
         return _scan.build_parser().parse_args(argv)
@@ -92,12 +101,12 @@ def parse_with_stage_script(command: str) -> argparse.Namespace:
 # subcommand token and the literal `{input.*}` placeholders that Snakemake fills in with real file paths at run time.
 def test_prepare_base_command_with_empty_config() -> None:
     assert compose(prepare_cmd) == (
-        "docker run --rm ghcr.io/driftless-star/driftless-star:stage-3-sfincs-cpu "
-        "python stages/stage3-neoclassical/sfincs_jax_radial_scan.py prepare "
-        "--common-config {input.common_config} "
-        "--sfincs-template {input.config_file} "
-        "--wout-path {input.wout} "
-        "--boozer-path {input.boozer} "
+        "docker run --rm ghcr.io/driftless-star/driftless-star:stage-3-dkx-cpu "
+        "python stages/stage3-neoclassical/dkx_radial_scan.py prepare "
+        "--common-config {input.common_config:q} "
+        "--dkx-template {input.config_file:q} "
+        "--wout-path {input.wout:q} "
+        "--boozer-path {input.boozer:q} "
         "--output-dir outputs/quick_run/stage3_neoclassical "
         "--backend cpu"
     )
@@ -108,20 +117,22 @@ def test_prepare_base_command_with_empty_config() -> None:
 # rule-execution time), and nothing beyond the payload and backend is emitted with an empty config.
 def test_run_one_base_command_with_empty_config() -> None:
     assert compose(run_one_cmd) == (
-        "docker run --rm ghcr.io/driftless-star/driftless-star:stage-3-sfincs-cpu "
-        "python stages/stage3-neoclassical/sfincs_jax_radial_scan.py run-one "
-        "--payload outputs/quick_run/stage3_neoclassical/runs/{wildcards.surf}/payload.json "
+        "docker run --rm ghcr.io/driftless-star/driftless-star:stage-3-dkx-cpu "
+        "python stages/stage3-neoclassical/dkx_radial_scan.py run-one "
+        "--payload 'outputs/quick_run/stage3_neoclassical/runs/{wildcards.surf}/payload.json' "
         "--backend cpu"
     )
 
 
-# `collect_cmd` builds the reduction command that folds per-surface results into the flux-profile HDF5. With an empty
-# config it should emit only the `collect` subcommand and the output dir; no backend flag exists on the reduction step.
+# `collect_cmd` builds the reduction command that folds per-surface results into the flux-profile HDF5.
+# With an empty config, the command includes the output directory and configured HDF5 path.
+# Collection has no backend flag.
 def test_collect_base_command_with_empty_config() -> None:
     assert compose(collect_cmd) == (
-        "docker run --rm ghcr.io/driftless-star/driftless-star:stage-3-sfincs-cpu "
-        "python stages/stage3-neoclassical/sfincs_jax_radial_scan.py collect "
-        "--output-dir outputs/quick_run/stage3_neoclassical"
+        "docker run --rm ghcr.io/driftless-star/driftless-star:stage-3-dkx-cpu "
+        "python stages/stage3-neoclassical/dkx_radial_scan.py collect "
+        "--output-dir outputs/quick_run/stage3_neoclassical "
+        "--output outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5"
     )
 
 
@@ -146,15 +157,6 @@ def test_prepare_verbose_workers_tristate() -> None:
     assert "--verbose-workers" not in absent and "--no-verbose-workers" not in absent
 
 
-# Plotting happens in the reduction step, so the plot toggle lives on `collect` and is tri-state: True emits --plot,
-# False emits --no-plot, absent emits neither. Token membership so --plot is not falsely found inside --no-plot.
-def test_collect_plot_tristate() -> None:
-    assert "--plot" in compose(collect_cmd, stage_cfg={"plot": True}).split()
-    assert "--no-plot" in compose(collect_cmd, stage_cfg={"plot": False}).split()
-    absent = compose(collect_cmd, stage_cfg={}).split()
-    assert "--plot" not in absent and "--no-plot" not in absent
-
-
 # Device assignment lives in the docker run prefix, so the worker command itself carries no GPU flag in either mode
 # and the worker pins the one device its container exposes. The worker phase reads no stage config at all, so a
 # retired gpu_ids key left in a config file has no path to this command.
@@ -169,8 +171,14 @@ def test_run_one_never_emits_gpu_ids() -> None:
 # stage script's own `build_parser`. Parsing must succeed and dispatch to cmd_prepare, so a renamed or dropped flag on
 # the prepare subparser fails here.
 def test_prepare_flags_parse_and_dispatch_to_cmd_prepare() -> None:
-    args = parse_with_stage_script(compose(prepare_cmd, stage_cfg=_FULL_CFG))
+    output_dir = "outputs/custom run/stage3"
+    result = "outputs/custom run/stage5/transport_solution.h5"
+    args = parse_with_stage_script(compose(
+        prepare_cmd, stage_cfg={**_FULL_CFG, "neopax_result": result}, output_dir=output_dir,
+    ))
     assert args.func.__name__ == "cmd_prepare"
+    assert args.output_dir == output_dir
+    assert args.neopax_result == result
 
 
 # A drift guard for the worker phase: the composed run-one command (gpu variant) must parse with the real stage script
@@ -178,20 +186,24 @@ def test_prepare_flags_parse_and_dispatch_to_cmd_prepare() -> None:
 # flat-parser attribute. gpu_ids staying at the parser's own "0" default proves the composer sent no id list, so the
 # worker pins device ordinal 0, the one device a pinned container exposes.
 def test_run_one_flags_parse_and_dispatch_to_cmd_run_one() -> None:
-    args = parse_with_stage_script(compose(run_one_cmd, device="gpu"))
+    args = parse_with_stage_script(compose(run_one_cmd, device="gpu", output_dir="outputs/custom run/stage3"))
     assert args.func.__name__ == "cmd_run_one"
-    assert args.payload == "outputs/quick_run/stage3_neoclassical/runs/rho_001_r0p1000/payload.json"
+    assert args.payload == "outputs/custom run/stage3/runs/rho_001_r0p1000/payload.json"
     assert args.gpu_ids == "0"
 
 
-# A drift guard for the reduction phase. The flat (no-subcommand) parser defines its own --output-dir and --plot
-# defaults; this asserts the collect subparser's parsed values win, so the composed --output-dir and --no-plot reach
+# A drift guard for the reduction phase. The flat (no-subcommand) parser defines its own --output-dir
+# default; this asserts the collect subparser's parsed value wins, so the composed --output-dir reaches
 # cmd_collect instead of being shadowed by flat-parser defaults.
 def test_collect_flags_parse_and_dispatch_to_cmd_collect() -> None:
-    args = parse_with_stage_script(compose(collect_cmd, stage_cfg=_FULL_CFG))
+    output_dir = "outputs/custom run/stage3"
+    output_file = f"{output_dir}/custom flux.h5"
+    args = parse_with_stage_script(compose(
+        collect_cmd, stage_cfg=_FULL_CFG, output_dir=output_dir, output_file=output_file,
+    ))
     assert args.func.__name__ == "cmd_collect"
-    assert args.output_dir == "outputs/quick_run/stage3_neoclassical"
-    assert args.plot is False
+    assert args.output_dir == output_dir
+    assert args.output == output_file
     assert args.command == "collect"
 
 

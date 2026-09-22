@@ -11,7 +11,9 @@ the template from iteration 2 onward and which re-pass Snakefile parse on every 
 
 from __future__ import annotations
 
+import json
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -169,21 +171,60 @@ def read_rho_edge(s5_config_template: str) -> float:
     return float(rho_edge)
 
 
+def _rewrite_neopax_paths(text: str, template: str, paths: dict[tuple[str, str], str]) -> str:
+    """Rewrite present path fields and verify the final TOML before it is written.
+
+    ``paths`` maps section/key pairs to their resolved string values. Missing
+    fields stay absent. Comparison parses keep floats as strings so unrelated
+    NaN values compare equal. Comments follow the existing line editor's behavior.
+    """
+    fields = ", ".join(f"[{section}].{key}" for section, key in paths)
+    try:
+        document = tomllib.loads(text, parse_float=str)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{template}: cannot resolve {fields} in invalid TOML. {exc}") from exc
+    expected = deepcopy(document)
+    assignments = {}
+    for (section, key), value in paths.items():
+        table = expected.get(section, {})
+        if not isinstance(table, dict):
+            raise ValueError(f"{template}: [{section}].{key} requires a TOML table.")
+        if key in table and table[key] != value:
+            table[key] = value
+            assignments[key] = json.dumps(value, ensure_ascii=False)
+    candidate = apply_assignments(text, assignments)
+    changed = ", ".join(f"[{section}].{key}" for section, key in paths if key in assignments)
+    error = (
+        f"{template}: cannot safely resolve {changed}. "
+        "Use an unquoted key at the start of a line with a single-line value "
+        "in its TOML section, and no matching assignments in other sections or multiline strings."
+    )
+    try:
+        parsed = tomllib.loads(candidate, parse_float=str)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(error) from exc
+    if parsed != expected:
+        raise ValueError(error)
+    return candidate
+
+
 def prepare_neopax_config(
     *,
     s5_config_template: str,
     s5_resolved_config: str,
     s1_output: str,
     s2_output: str,
-    s3_output: str,
-    s4_output: str,
+    s3_output: str | None,
+    s4_output: str | None,
     s5_output_dir: str,
 ) -> None:
     """Write a path-resolved copy of the NEOPAX template for the current run.
 
     Writes a path-resolved copy of ``s5_config_template`` to ``s5_resolved_config``, with
-    its five path fields rewritten relative to the copy's own directory (NEOPAX runs
-    there). The committed template is never modified.
+    its path fields rewritten relative to the copy's own directory (NEOPAX runs
+    there). Flux-file fields for skipped producers are cleared. The committed
+    template is never modified. The final TOML is checked against the intended
+    changes to all five path fields before the resolved file is written.
 
     Parameters
     ----------
@@ -191,31 +232,37 @@ def prepare_neopax_config(
         Path to the shared NEOPAX template (``inputs/<run>/common_input.toml``).
     s5_resolved_config : str
         Path of the resolved copy to write (under ``outputs/<run>/stage5_transport/``).
-    s1_output, s2_output, s3_output, s4_output : str
-        Paths to Stage 1-4 output artifacts referenced by NEOPAX.
+    s1_output, s2_output : str
+        Paths to Stage 1 and Stage 2 output artifacts referenced by NEOPAX.
+    s3_output, s4_output : str or None
+        Paths to Stage 3 and Stage 4 output artifacts referenced by NEOPAX.
+        Pass ``None`` for Stage 3 or Stage 4 when that producer is skipped.
     s5_output_dir : str
         Stage 5 output directory (where NEOPAX writes ``transport_solution.h5``).
 
     Raises
     ------
     ValueError
-        If [profiles].model is ``given``, or if prescribed profiles do not contain the center and
-        face state required by Stages 3-5.
+        If the template is invalid or the line editor cannot make exactly the
+        intended path changes. Also if [profiles].model is ``given``, or if prescribed profiles do
+        not contain the center and face state required by Stages 3-5. An existing resolved file is
+        left untouched.
     """
     resolved = Path(s5_resolved_config)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
     base = resolved.parent.resolve()
 
     def _rel(p: str) -> str:
         return str(Path(p).resolve().relative_to(base, walk_up=True))
 
-    assignments = {
-        "vmec_file": f'"{_rel(s1_output)}"',
-        "boozer_file": f'"{_rel(s2_output)}"',
-        "neoclassical_file": f'"{_rel(s3_output)}"',
-        "turbulence_file": f'"{_rel(s4_output)}"',
-        "transport_output_dir": f'"{_rel(s5_output_dir)}/"',
+    paths = {
+        ("geometry", "vmec_file"): _rel(s1_output),
+        ("geometry", "boozer_file"): _rel(s2_output),
+        ("neoclassical", "neoclassical_file"): "" if s3_output is None else _rel(s3_output),
+        ("turbulence", "turbulence_file"): "" if s4_output is None else _rel(s4_output),
+        ("transport_output", "transport_output_dir"): f"{_rel(s5_output_dir)}/",
     }
     template_text = Path(s5_config_template).read_bytes().decode("utf-8")
+    resolved_text = _rewrite_neopax_paths(template_text, s5_config_template, paths)
     _validate_neopax_profiles(tomllib.loads(template_text), s5_config_template)
-    resolved.write_bytes(apply_assignments(template_text, assignments).encode("utf-8"))
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_bytes(resolved_text.encode("utf-8"))

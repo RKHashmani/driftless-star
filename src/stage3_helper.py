@@ -1,29 +1,37 @@
 """Stage 3 (neoclassical) shell-command composition for the Snakemake workflow.
 
-The Stage 3 ``sfincs_jax`` radial-scan script accepts many optional flags; this
-module turns the user-facing ``config.yaml`` ``stage3.sfincs_jax`` block into the
+The Stage 3 ``dkx`` radial-scan script accepts many optional flags; this
+module turns the user-facing ``config.yaml`` ``stage3.dkx`` block into the
 per-phase shell commands run by the Snakefile's ``stage3_prepare`` checkpoint and
 its ``stage3_run_one``/``stage3_collect`` rules.
 """
 
 from __future__ import annotations
 
-_SCRIPT = "stages/stage3-neoclassical/sfincs_jax_radial_scan.py"
+import shlex
+
+_SCRIPT = "stages/stage3-neoclassical/dkx_radial_scan.py"
 
 # (config_key, cli_flag) accepted by the `prepare` subcommand; emitted as `<flag> <value>` when set.
 _PREPARE_OPTIONAL_FLAGS: list[tuple[str, str]] = [
-    ("profiles_source",    "--profiles-source"),
-    ("neopax_result",      "--neopax-result"),
-    ("ntheta",             "--ntheta"),
-    ("nzeta",              "--nzeta"),
-    ("nxi",                "--nxi"),
-    ("nx",                 "--nx"),
-    ("solver_tolerance",   "--solver-tolerance"),
-    ("analytical_n_radii", "--analytical-n-radii"),
-    ("rho_indices",        "--rho-indices"),
-    ("rho_min",            "--rho-min"),
-    ("rho_max",            "--rho-max"),
-    ("num_radii",          "--num-radii"),
+    ("profiles_source",             "--profiles-source"),
+    ("neopax_result",               "--neopax-result"),
+    ("ntheta",                      "--ntheta"),
+    ("nzeta",                       "--nzeta"),
+    ("nxi",                         "--nxi"),
+    ("nx",                          "--nx"),
+    ("solver_tolerance",            "--solver-tolerance"),
+    ("analytical_n_radii",          "--analytical-n-radii"),
+    ("rho_indices",                 "--rho-indices"),
+    ("rho_min",                     "--rho-min"),
+    ("rho_max",                     "--rho-max"),
+    ("num_radii",                   "--num-radii"),
+    ("response_mode",               "--response-mode"),
+    ("perturb_density_species",     "--perturb-density-species"),
+    ("perturb_temperature_species", "--perturb-temperature-species"),
+    ("dkap_density",                "--dkap-density"),
+    ("dkap_temperature",            "--dkap-temperature"),
+    ("perturb_rel_step",            "--perturb-rel-step"),
 ]
 
 # verbose_workers is baked into each per-surface payload at prepare time.
@@ -42,7 +50,7 @@ def _append_optional_flags(parts: list[str], stage_cfg: dict, table: list[tuple[
     for key, flag in table:
         value = stage_cfg.get(key)
         if value is not None:
-            parts.append(f"{flag} {value}")
+            parts.append(f"{flag} {shlex.quote(str(value))}")
 
 
 def _append_bool_flags(parts: list[str], stage_cfg: dict, table: list[tuple[str, str, str]]) -> None:
@@ -63,7 +71,7 @@ def prepare_cmd(
     output_dir: str,
     device: str,
 ) -> str:
-    """Compose the Stage 3 ``sfincs_jax`` ``prepare`` shell command.
+    """Compose the Stage 3 ``dkx`` ``prepare`` shell command.
 
     Concretely: build the CLI arguments for the scan script's ``prepare``
     subcommand from ``stage_cfg`` and wrap them in a ``docker run`` invocation
@@ -75,9 +83,9 @@ def prepare_cmd(
     docker_prefix : str
         ``docker run ...`` prefix prepared by the Snakefile.
     image : str
-        Container image for Stage 3 (e.g. ``ghcr.io/.../stage-3-sfincs-cpu``).
+        Container image for Stage 3 (e.g. ``ghcr.io/.../stage-3-dkx-cpu``).
     stage_cfg : dict
-        The ``config.yaml`` ``stage3.sfincs_jax`` block.
+        The ``config.yaml`` ``stage3.dkx`` block.
     output_dir : str
         Stage 3 output directory (already ``{run_name}``-substituted).
     device : str
@@ -91,13 +99,13 @@ def prepare_cmd(
         so Snakemake substitutes them at rule-execution time.
     """
     parts = [
-        f"{docker_prefix} {image}",
+        f"{docker_prefix} {shlex.quote(image)}",
         f"python {_SCRIPT} prepare",
-        "--common-config {input.common_config}",
-        "--sfincs-template {input.config_file}",
-        "--wout-path {input.wout}",
-        "--boozer-path {input.boozer}",
-        f"--output-dir {output_dir}",
+        "--common-config {input.common_config:q}",
+        "--dkx-template {input.config_file:q}",
+        "--wout-path {input.wout:q}",
+        "--boozer-path {input.boozer:q}",
+        f"--output-dir {shlex.quote(output_dir)}",
         f"--backend {device}",
     ]
     _append_optional_flags(parts, stage_cfg, _PREPARE_OPTIONAL_FLAGS)
@@ -112,14 +120,14 @@ def run_one_cmd(
     output_dir: str,
     device: str,
 ) -> str:
-    """Compose the Stage 3 ``sfincs_jax`` ``run-one`` shell command.
+    """Compose the Stage 3 ``dkx`` ``run-one`` shell command.
 
     Parameters
     ----------
     docker_prefix : str
         ``docker run ...`` prefix prepared by the Snakefile.
     image : str
-        Container image for Stage 3 (e.g. ``ghcr.io/.../stage-3-sfincs-cpu``).
+        Container image for Stage 3 (e.g. ``ghcr.io/.../stage-3-dkx-cpu``).
     output_dir : str
         Stage 3 output directory (already ``{run_name}``-substituted).
     device : str
@@ -133,10 +141,11 @@ def run_one_cmd(
         ``{wildcards.surf}`` placeholder names the per-surface run directory and
         stays literal so Snakemake substitutes it at rule-execution time.
     """
+    payload = f"{output_dir}/runs/{{wildcards.surf}}/payload.json"
     parts = [
-        f"{docker_prefix} {image}",
+        f"{docker_prefix} {shlex.quote(image)}",
         f"python {_SCRIPT} run-one",
-        f"--payload {output_dir}/runs/{{wildcards.surf}}/payload.json",
+        f"--payload {shlex.quote(payload)}",
         f"--backend {device}",
     ]
     return " ".join(parts)
@@ -148,19 +157,22 @@ def collect_cmd(
     image: str,
     stage_cfg: dict,
     output_dir: str,
+    output_file: str,
 ) -> str:
-    """Compose the Stage 3 ``sfincs_jax`` ``collect`` shell command.
+    """Compose the Stage 3 ``dkx`` ``collect`` shell command.
 
     Parameters
     ----------
     docker_prefix : str
         ``docker run ...`` prefix prepared by the Snakefile.
     image : str
-        Container image for Stage 3 (e.g. ``ghcr.io/.../stage-3-sfincs-cpu``).
+        Container image for Stage 3 (e.g. ``ghcr.io/.../stage-3-dkx-cpu``).
     stage_cfg : dict
-        The ``config.yaml`` ``stage3.sfincs_jax`` block.
+        The ``config.yaml`` ``stage3.dkx`` block.
     output_dir : str
         Stage 3 output directory (already ``{run_name}``-substituted).
+    output_file : str
+        Resolved path of the aggregate flux-profile HDF5.
 
     Returns
     -------
@@ -169,9 +181,10 @@ def collect_cmd(
         results into the flux-profile HDF5.
     """
     parts = [
-        f"{docker_prefix} {image}",
+        f"{docker_prefix} {shlex.quote(image)}",
         f"python {_SCRIPT} collect",
-        f"--output-dir {output_dir}",
+        f"--output-dir {shlex.quote(output_dir)}",
+        f"--output {shlex.quote(output_file)}",
     ]
     _append_bool_flags(parts, stage_cfg, _COLLECT_BOOL_FLAGS)
     return " ".join(parts)

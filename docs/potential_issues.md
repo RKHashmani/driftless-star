@@ -18,8 +18,8 @@
 
 ## Stage 1 -- Equilibrium
 
-- [ ] vmec/vmec_jax and DESC do not have directly compatible inputs; an adapter or input translation layer will be needed to support both implementations behind the same pipeline entry point
-- [ ] vmec_jax only consumes a subset of the full VMEC INDATA file; need to document which fields are supported/ignored, or validate inputs to warn when unsupported fields are present
+- [ ] VMEX and DESC do not have directly compatible inputs. An adapter or input translation layer is needed to support both implementations behind the same pipeline entry point
+- [ ] Document which VMEC INDATA fields the pinned VMEX revision supports or ignores, and decide how the pipeline should handle unsupported fields
 - [ ] DESC can output Boozer coordinates directly, so with the right flag/argument it can handle both Stage 1 and Stage 2; the pipeline should support this shortcut path
 
 ## Stage 2 -- Boozer Transform
@@ -28,7 +28,7 @@
 
 ## Stage 3 -- Neoclassical
 
-- [ ] sfincs/sfincs_jax and NEO_JAX do not have directly compatible inputs; same adapter/translation issue as Stage 1.
+- [ ] sfincs/DKX and NEO_JAX do not have directly compatible inputs; same adapter/translation issue as Stage 1.
 - [ ] NEO_JAX is fast, but its output can't be used for future stages. sfincs is slower, but more accurate.
 - [ ] NEO_JAX is excluded from the MVP, but should be included in the final pipeline as an optional stage; its effective ripple output is valuable as a figure of merit even though it does not feed later stages
 
@@ -38,9 +38,11 @@
 
 ## Stage 5 -- Transport
 
-- [ ] A run whose transport window completes in one NEOPAX call stops the loop at iteration 1 with `horizon`. That is the correct reading of `[transport_solver].t_final` as an absolute end time, but such a config exercises none of the feedback path beyond the first pass. `inputs/quick_run` is such a config. Its archived solutions reach `t_final = 1.4e-6` in one call, so the documented `pixi run driftless-star --max-iters 3` example is a one-iteration run. Accepted for now, because the quick run is a smoke config. To exercise the feedback path again, the config must stop each call short of `t_final`, for example with a `stop_after_accepted_steps` cap as the W7-X validation uses. A larger `t_final` does not help, because one call covers it regardless. The W7-X validation is unaffected; it covers about one percent of its `t_final` per call.
+- [ ] Align the DKX and GKX gradient-response basis with NEOPAX before using these slopes in transport. Density perturbations preserve pressure gradient. Their slopes approximate `dF/dkappa_n - dF/dkappa_T`. Temperature slopes approximate `dF/dkappa_T`. In the [pinned NEOPAX source](https://github.com/uwplasma/NEOPAX/blob/9034aafdb6e57beaf8fea8922ce838fbfb738763/NEOPAX/_transport_flux_models.py), `FluxesRFileTransportModel._spectrax_fd_face_basis` selects independent density and temperature coordinates. The function `evaluate_with_lagged_response` multiplies each slope by its coordinate change. Adapt the basis or transform the slopes before coupling. Matching dataset names in `read_flux_profile_fd_response_file` does not prove mathematical compatibility.
 
-- [ ] The `q`/`gamma` flux-versus-gradient scatter panels have not yet drawn from a real artifact. `stages/stage5-post-processing/plot_transport_panels.py`, which sits in this tree as an untracked file, reads `density_grad_faces` / `temperature_grad_faces` and pairs them with `rho_face`. The scatters therefore use the same per-rho `a/L_X` that drove GKX; one multiplication by the minor radius converts the stored per-metre gradients. The pairing guard compares the flux grid against the face grid. But every `transport_solution.h5` currently under `outputs/` predates the NEOPAX revision that exports the gradient datasets, so on the archived artifacts the panels stay omitted with a reason naming the absent face data. A copy of a real artifact, augmented with contract-shaped gradients, demonstrates the wiring. Confirm the `q` panel draws on the first run at the current pin, then drop this entry.
+- [ ] Align the DKX response radial grid with NEOPAX before enabling FD transport. Stage 3 writes `r = rHat`. It stores `rho` separately. The pinned source's `_require_matching_fd_grid` requires the file and target grids to have the same shape and values with `rtol=0` and `atol=1e-12`. Resolve the coordinate mapping and face sampling. Then validate the coupled response. Baseline flux interpolation does not satisfy this FD grid requirement.
+
+- [ ] A run whose transport window completes in one NEOPAX call stops the loop at iteration 1 with `horizon`. That is the correct reading of `[transport_solver].t_final` as an absolute end time, but such a config exercises none of the feedback path beyond the first pass. `inputs/quick_run` is such a config. Its archived solutions reach `t_final = 1.4e-6` in one call, so the documented `pixi run driftless-star --max-iters 3` example is a one-iteration run. Accepted for now, because the quick run is a smoke config. To exercise the feedback path again, the config must stop each call short of `t_final`, for example with a `stop_after_accepted_steps` cap as the W7-X validation uses. A larger `t_final` does not help, because one call covers it regardless. The W7-X validation is unaffected; it covers about one percent of its `t_final` per call.
 
 ## W&B / Output Tracking
 

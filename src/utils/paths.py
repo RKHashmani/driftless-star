@@ -28,6 +28,7 @@ def resolve_pipeline_paths(
     config: dict,
     input_dir: str | None = None,
     output_dir: str | None = None,
+    enabled: dict[str, bool] | None = None,
 ) -> dict[str, str]:
     """Turn one run's config into every concrete path the pipeline reads or writes.
 
@@ -35,16 +36,21 @@ def resolve_pipeline_paths(
     ----------
     config : dict
         Parsed run config; must contain ``run_name``, ``input_dir``,
-        ``output_dir``, and ``filenames``.
+        ``output_dir``, and ``filenames``. Filename entries are relative to their
+        input or stage output directory. The directories can be absolute.
     input_dir, output_dir : str, optional
         Override the config's directories (``None`` keeps the config value). The
         loop driver passes these to run an iteration inside its own
         ``outputs/<run>/loop/iter_N/{input,output}`` sandbox.
+    enabled : dict[str, bool], optional
+        Enabled flags from ``resolve_enabled_stages``. If omitted, all stages are
+        enabled. Skipped producers have no path entries.
 
     Returns
     -------
     dict[str, str]
-        Repo-relative paths, in five groups:
+        Paths relative to the repository or under absolute directories, in five groups.
+        Stage 3 and Stage 4 entries are present only when that producer is enabled.
 
         - the resolved ``input_dir`` and ``output_dir``;
         - input files ``s1_input``, ``s3_config``, ``s4_config``, ``s5_config``
@@ -59,6 +65,11 @@ def resolve_pipeline_paths(
           ``s5_config_feedback`` (the ``common_input`` copy carrying prescribed
           profiles from the transport solution, seeding the next iteration).
 
+    Raises
+    ------
+    ValueError
+        If the filenames mapping or a required filename is missing or invalid.
+
     Examples
     --------
     >>> config = {
@@ -72,7 +83,7 @@ def resolve_pipeline_paths(
     ...         "s5_config": "common_input.toml",
     ...         "s1_output": "wout_{run_name}.nc",
     ...         "s2_output": "boozmn_{run_name}.nc",
-    ...         "s3_output": "sfincs_jax_flux_profiles.h5",
+    ...         "s3_output": "dkx_flux_profiles.h5",
     ...         "s4_output": "neopax_fluxes.h5",
     ...         "s5_output": "transport_solution.h5",
     ...         "s5_signal": "converge_status.json",
@@ -83,13 +94,12 @@ def resolve_pipeline_paths(
     >>> resolve_pipeline_paths(config, output_dir="outputs/demo/loop/iter_1/output")["s5_signal"]
     'outputs/demo/loop/iter_1/output/stage5_post_processing/converge_status.json'
     """
-    run_name = config["run_name"]
+    enabled = {} if enabled is None else enabled
     input_dir = input_dir if input_dir is not None else config["input_dir"]
     output_dir = output_dir if output_dir is not None else config["output_dir"]
-    files = config["filenames"]
 
     def fn(key: str) -> str:
-        return files[key].format(run_name=run_name)
+        return _filename(config, key)
 
     def stage_dir(key: str) -> str:
         return f"{output_dir}/{_STAGE_SUBDIRS[key]}"
@@ -97,32 +107,64 @@ def resolve_pipeline_paths(
     def out(key: str) -> str:
         return f"{stage_dir(key)}/{fn(key)}"
 
-    return {
+    paths = {
         "input_dir": input_dir,
         "output_dir": output_dir,
         # Input files.
         "s1_input": f"{input_dir}/{fn('s1_input')}",
-        "s3_config": f"{input_dir}/{fn('s3_config')}",
-        "s4_config": f"{input_dir}/{fn('s4_config')}",
         "s5_config": f"{input_dir}/{fn('s5_config')}",
         # Output artifacts.
         "s1_output": out("s1_output"),
         "s2_output": out("s2_output"),
-        "s3_output": out("s3_output"),
-        "s4_output": out("s4_output"),
         "s5_output": out("s5_output"),
         "s5_signal": out("s5_signal"),
         # Per-stage output dirs.
         "stage1_dir": stage_dir("s1_output"),
         "stage2_dir": stage_dir("s2_output"),
-        "stage3_dir": stage_dir("s3_output"),
-        "stage4_dir": stage_dir("s4_output"),
         "stage5_dir": stage_dir("s5_output"),
         "stage5_post_dir": stage_dir("s5_signal"),
         # Generated under outputs/.
-        "stage3_manifest": f"{stage_dir('s3_output')}/{MANIFEST_BASENAME}",
-        "stage4_manifest": f"{stage_dir('s4_output')}/{MANIFEST_BASENAME}",
         "s5_resolved_config": f"{stage_dir('s5_output')}/{RESOLVED_COMMON_CONFIG}",
         "s1_feedback": f"{stage_dir('s5_signal')}/{fn('s1_input')}",
         "s5_config_feedback": f"{stage_dir('s5_signal')}/{fn('s5_config')}",
     }
+    for stage in (3, 4):
+        if enabled.get(f"stage{stage}", True):
+            key = f"s{stage}_output"
+            paths[f"s{stage}_config"] = f"{input_dir}/{fn(f's{stage}_config')}"
+            paths[key] = out(key)
+            paths[f"stage{stage}_dir"] = stage_dir(key)
+            paths[f"stage{stage}_manifest"] = f"{stage_dir(key)}/{MANIFEST_BASENAME}"
+    return paths
+
+
+def _filename(config: dict, key: str) -> str:
+    """Validate and expand one required filename."""
+    files = config.get("filenames")
+    if not isinstance(files, dict):
+        raise ValueError("config['filenames'] must be a mapping of filename keys to relative paths.")
+    value = files.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"config['filenames']['{key}'] must be a nonempty path string, got {value!r}.")
+    return value.format(run_name=config["run_name"])
+
+
+def resolve_common_config_path(config: dict) -> str:
+    """Resolve the shared template without requiring optional producer filenames.
+
+    Parameters
+    ----------
+    config : dict
+        Run config containing ``input_dir``, ``run_name``, and ``filenames.s5_config``.
+
+    Returns
+    -------
+    str
+        Shared template path under the configured input directory.
+
+    Raises
+    ------
+    ValueError
+        If the filenames mapping or shared template filename is invalid.
+    """
+    return f"{config['input_dir']}/{_filename(config, 's5_config')}"

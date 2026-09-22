@@ -63,21 +63,59 @@ pixi run driftless-star-fwd --configfile inputs/quick_run/config.yaml --config c
 pixi run driftless-star --config inputs/quick_run/config.yaml --container-runtime apptainer --max-iters 3 --cores 4
 ```
 
-### Run the W7-X case
+### Run the W7-X benchmark
 
 To replicate the plasma profile evolution from the [T3D+GX example](https://t3d.readthedocs.io/en/latest/QuickGX.html), we have an input file that uses identical initial profiles.
 
-For a single forward run, use
+The W7-X cases use GPUs by default. Set `gpu_ids` and `jobs_per_gpu` in the selected `config.yaml` to match your host. See [GPU setup and scheduling](docs/mvp-pipeline.md#multi-gpu-scheduling) for details.
+
+The benchmark keeps the supplied equilibrium fixed and disables neoclassical transport. From the repository root, copy the supplied equilibrium into the first iteration's output directory to skip Stage 1.
 
 ```bash
-pixi run driftless-star-fwd --configfile inputs/w7-x_t3d_validation/config.yaml --cores 4
+mkdir -p outputs/w7-x/t3d_benchmark/loop/iter_1/output/stage1_equilibrium
+cp inputs/w7-x/t3d_benchmark/wout_w7x_t3d_reconstruction.nc \
+  outputs/w7-x/t3d_benchmark/loop/iter_1/output/stage1_equilibrium/wout_w7x_t3d_reconstruction.nc
 ```
 
-For the feedback loop, use
+Then run the loop.
 
 ```bash
-pixi run driftless-star --config inputs/w7-x_t3d_validation/config.yaml --max-iters 3 --cores 4
+pixi run driftless-star --config inputs/w7-x/t3d_benchmark/config.yaml --max-iters 400 --cores 8
 ```
+
+The loop runs for at most 400 iterations and can stop earlier when it converges, reaches the configured transport time, or reports a halt. Each iteration writes to `outputs/w7-x/t3d_benchmark/loop/iter_N/`, with the transport result in `output/stage5_transport/transport_solution.h5`.
+
+### Run the W7-X comparison cases
+
+The four other W7-X cases vary equilibrium feedback and neoclassical transport. Each case calculates its initial equilibrium automatically. With equilibrium feedback off, it reuses that equilibrium in later iterations.
+
+| Case | Equilibrium feedback | Neoclassical transport |
+| --- | --- | --- |
+| [`mhd_off_neoclassical_off`](inputs/w7-x/mhd_off_neoclassical_off/config.yaml) | Off | Off |
+| [`mhd_off_neoclassical_on`](inputs/w7-x/mhd_off_neoclassical_on/config.yaml) | Off | On |
+| [`mhd_on_neoclassical_off`](inputs/w7-x/mhd_on_neoclassical_off/config.yaml) | On | Off |
+| [`mhd_on_neoclassical_on`](inputs/w7-x/mhd_on_neoclassical_on/config.yaml) | On | On |
+
+For example, to run with both equilibrium feedback and neoclassical transport enabled, use
+
+```bash
+pixi run driftless-star --config inputs/w7-x/mhd_on_neoclassical_on/config.yaml --max-iters 400 --cores 8
+```
+
+Replace `mhd_on_neoclassical_on` with another case from the table to run that configuration. Each iteration writes to `outputs/w7-x/<case>/loop/iter_N/`, with the transport result in `output/stage5_transport/transport_solution.h5`.
+
+### W7-X results
+
+Example results from the benchmark and the four comparison cases, with the T3D+GX reference.
+
+<p align="center">
+  <a href="docs/_static/w7-x/iteration_ion_temperature.png"><img src="docs/_static/w7-x/iteration_ion_temperature.png" alt="Benchmark ion temperature over 12 iterations compared with T3D+GX" width="32%"></a>
+  <a href="docs/_static/w7-x/iteration_collisional_exchange.png"><img src="docs/_static/w7-x/iteration_collisional_exchange.png" alt="Benchmark collisional heating over 12 iterations compared with T3D+GX" width="32%"></a>
+  <a href="docs/_static/w7-x/ion_heat_flux_power_log.png"><img src="docs/_static/w7-x/ion_heat_flux_power_log.png" alt="Benchmark ion heat flux over 12 iterations compared with T3D+GX, on a logarithmic scale" width="32%"></a>
+</p>
+<p align="center">
+  <a href="docs/_static/w7-x/ion_temperature_comparison.png"><img src="docs/_static/w7-x/ion_temperature_comparison.png" alt="Ion temperature profiles for the benchmark, the four equilibrium feedback and neoclassical transport combinations, and T3D+GX" width="900"></a>
+</p>
 
 
 ## Currently Supported Software

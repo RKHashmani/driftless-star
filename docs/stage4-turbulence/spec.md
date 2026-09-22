@@ -2,6 +2,8 @@
 
 ## Overview
 
+The workflow can omit unused flux producers. See [automatic producer skipping](../mvp-pipeline.md#automatic-producer-skipping) for selector, input, and output requirements.
+
 Stage 4 solves the gyrokinetic equations to compute turbulent transport. The primary outputs -- heat and particle fluxes -- are both optimization objectives (to minimize) AND direct transport inputs for Stage 5.
 
 **JAX-first priority:** `GKX` is the primary code (JAX-native, differentiable). `GX` and `GENE` are traditional alternatives added later.
@@ -156,7 +158,9 @@ Required `meta` group attributes (checked by the contract): `particle_flux_units
 
 Setting `stage4.neopax_radius_relabel` to a convention name runs `stages/stage4-turbulence/relabel_neopax_flux_radius.py` at the end of `stage4_collect`, rewriting `r` as `a * rho` for that convention so every knot sits at the radius Stage 5 means by it. Where the flux file also samples the same face-grid `rho` points NEOPAX grids, the knots coincide with its interpolation targets and the interpolation becomes an identity; a scan that subsampled radii still interpolates between knots, but from correctly placed ones. `"boozer_volume"` targets the grid NEOPAX builds today and is the only convention defined so far; `false` (the default) writes the grid through unchanged. The key names a convention rather than switching a boolean, so a NEOPAX that grids differently becomes a new name and a config edit rather than a revert. Only `r` is rewritten, so the flux values keep the gyro-Bohm normalization Stage 4 applied. The step is idempotent, and a rewritten file records `neopax_radius_relabel_applied`, `neopax_radius_relabel_convention`, `neopax_radius_relabel_a_minor_m` (the minor radius relabelled onto) and `neopax_radius_relabel_original_r_edge_m` (the file's outermost knot before the rewrite, `Aminor_p * rho[-1]`) in its `meta` group. The flux file's `rho` grid must cover `[0, rho_edge]` for `[geometry].rho_edge` from `common_input.toml`, since either end stopping short leaves the matching end of NEOPAX's grid outside the knots, where interpolation returns NaN. Both comparisons are exact and one-sided rather than tolerant, because interpax admits no tolerance of its own and a knot one ulp inside a target still leaves it uncovered; covering more than the interval is accepted. A scan that subsamples radii through `rho_min`, `num_radii` or `rho_indices` produces a grid starting above 0 and is rejected for that reason, because `collect` re-inserts the magnetic axis only for a scan that covered every other face. Interior spacing is deliberately unconstrained, since a sparse grid covering the interval is a valid input for NEOPAX to interpolate from; `lagged_response_mode = "fd"` additionally needs the grids equal point for point, and NEOPAX enforces that itself at model construction.
 
-**Optional perturbed-flux datasets (finite-difference response mode).** When the manifest contains perturbed runs (Stage 4 config `response_mode: fd_gradients`), `collect` additionally writes the datasets below, keyed on a perturbation axis of length `n_perturb` (one entry per distinct `(response_label, perturb_species)` pair, in first-seen manifest order). The base `Gamma` / `Q` / `rho` / `r` datasets are still computed from base runs only. These are additions outside the `validate_neopax_fluxes` required subset (the validator checks only the required fields and ignores extra datasets). Stage 5 reads all six of them whenever its `common_input.toml` sets `[turbulence] lagged_response_mode = "fd"`, which is how the finite-difference lagged flux response reaches the transport solve; NEOPAX takes `Gamma_perturbed` / `Q_perturbed` under those names or the shorter `Gamma_perturb` / `Q_perturb`, requires `perturb_delta` and `perturb_present`, and reads the perturbation labels from the `(response_label, perturb_species)` pair written here. That mode additionally requires the file's `r` grid to equal NEOPAX's own to within `1e-12`, so it presumes the radial-grid adapter above.
+**Optional perturbed-flux datasets (finite-difference response mode).** When the manifest contains perturbed runs (Stage 4 config `response_mode: fd_gradients`), `collect` additionally writes the datasets below, keyed on a perturbation axis of length `n_perturb` (one entry per distinct `(response_label, perturb_species)` pair, in first-seen manifest order). The base `Gamma` / `Q` / `rho` / `r` datasets are still computed from base runs only. These are additions outside the `validate_neopax_fluxes` required subset (the validator checks only the required fields and ignores extra datasets). Stage 5 reads all six of them whenever its `common_input.toml` sets `[turbulence] lagged_response_mode = "fd"`, where NEOPAX takes `Gamma_perturbed` / `Q_perturbed` under those names or the shorter `Gamma_perturb` / `Q_perturb`, requires `perturb_delta` and `perturb_present`, and reads the perturbation labels from the `(response_label, perturb_species)` pair written here. That mode additionally requires the file's `r` grid to equal NEOPAX's own to within `1e-12`, so it presumes the radial-grid adapter above.
+
+The stored density perturbations preserve the pressure gradient, giving slopes `dF/dkappa_n - dF/dkappa_T`. The [pinned NEOPAX reader](https://github.com/uwplasma/NEOPAX/blob/9034aafdb6e57beaf8fea8922ce838fbfb738763/NEOPAX/_transport_flux_models.py) applies independent density and temperature coordinates. Using these slopes directly would therefore omit the `dF/dkappa_T * delta_kappa_n` contribution. Align the response basis before enabling FD transport. The radial-grid adapter does not correct this basis mismatch. See the [coupling follow-up](../potential_issues.md#stage-5----transport).
 
 | Dataset | Shape | Meaning |
 |---------|-------|---------|
@@ -274,7 +278,7 @@ python -m gkx.cli run --config inputs/quick_run/HSX_vacuum_ns201_quickrun.toml -
 **Output:** the `stage-4-gkx-radial-scan` collect step writes `outputs/quick_run/stage4_turbulence/neopax_fluxes.h5` (+ `flux_summary.h5`, `manifest.json`, `runs.csv`); the single-run task above writes under its own `--out` prefix.
 
 > [!NOTE]
-> The TOML's `vmec_file` points into `outputs/quick_run/stage1_equilibrium/`. Populate this directory by running `pixi run stage-1-vmec` first. The VMEC geometry path also requires `booz_xform_jax` at runtime (lazy dependency).
+> The TOML's `vmec_file` points into `outputs/quick_run/stage1_equilibrium/`. Populate this directory by running `pixi run stage-1-vmex` first. The VMEC geometry path also requires `booz_xform_jax` at runtime (lazy dependency).
 
 See `docs/mvp-pipeline.md` for full I/O details.
 
@@ -324,3 +328,25 @@ See [guide](../guide.md#container-architecture) for full architecture details.
 > [!TODO]
 > Create dev, operational, and cross-stage Claude skills for GKX and GX workflows.
 > See [guide](../guide.md#step-7-create-claude-skills) for skill types.
+
+## Profile beta and self-collisionality
+
+To calculate beta and species self-collision frequencies from the NEOPAX face state and VMEC geometry, set these values under `stage4.gkx`.
+
+```yaml
+beta_source: profiles
+collisionality_source: profiles
+collisionality_scaling_factor: 1.0
+```
+
+Each source independently accepts `fixed` or `profiles` and defaults to `fixed`. Fixed beta uses the CLI value, then the template value, then zero. Fixed ion and electron collision frequencies default to 0.01 and 0.0. The scaling factor must be finite and nonnegative. It affects only profile collision frequencies. A value of 0.0 disables collisions in profile mode.
+
+Profile beta does not enable electromagnetic physics. In the GKX template, enable `physics.electromagnetic`, the desired `physics.use_apar` and/or `physics.use_bpar` fields, and their `terms.apar` and/or `terms.bpar` weights. The shipped template disables electromagnetic physics, so its effective beta stays zero. Existing collision and hypercollision switches and term weights still apply.
+
+The pipeline and radial scan calculate parameters each time they prepare inputs, including the first run. They use the selected analytical, prescribed, or transport-HDF5 face state and requested time slice. Gradient perturbations keep their base surface's beta and collision frequencies. Stage 5 feedback uses prescribed profiles. A frozen Stage 4 reuses its flux file. Direct `gkx run` does not perform these calculations. The CLI equivalents are `--beta-source`, `--collisionality-source`, and `--collisionality-scaling-factor`.
+
+The formulas follow [pinned T3D Species.py](https://api.bitbucket.org/2.0/repositories/gyrokinetics/t3d/src/74a06dfdf8e005e6bc72ef79859413ba69abd626/t3d/Species.py). Density is in 1e20 m^-3, temperature in keV, and mass in proton units. Beta is `0.0403 n_ref T_ref / B_ref^2`. The self-collision rate is `285 Z^4 n lnLambda / (sqrt(A) T^1.5)` in inverse seconds, including electron-electron collisions. GKX receives this rate multiplied by `L_ref / v_ref` and the scaling factor, where `L_ref = Aminor_p`, `B_ref = abs(phi_edge) / (pi L_ref^2)`, and `v_ref = sqrt(1000 e T_ref / m_p)`. VMEC must supply explicit `Aminor_p` and, for beta, `phi`. Invalid physical inputs fail preparation instead of using normalization floors.
+
+`normalization_audit.csv` and `.json` record physical inputs, calculated parameters, and effective field and collision terms. New manifests require successful diagnostics and a completion marker matching the prepared inputs. Changed inputs require preparation again. Collection rejects untrusted results unless `--allow-incomplete` is explicit (`--collect-even-if-failures` in the full scan). Incomplete exports are marked and must not serve as complete transport input. Older manifests retain their previous completion behavior.
+
+Full T3D+GX equivalence remains unverified. Species mass normalization, absolute physical-flux conversion, and collision-operator equivalence are unresolved. This feature preserves the existing mass and flux conventions. The [pinned GKX acceptance script](../../tests/stage4-turbulence/acceptance/pinned_gkx.py) includes reproduction instructions and checks parameter loading and execution, not converged transport agreement.

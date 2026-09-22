@@ -2,12 +2,14 @@
 
 ## Overview
 
-Stage 3 computes neoclassical transport properties from the Boozer-coordinate equilibrium. It has two codes:
+The workflow can omit unused flux producers. See [automatic producer skipping](../mvp-pipeline.md#automatic-producer-skipping) for selector, input, and output requirements.
+
+Stage 3 computes neoclassical transport properties from the equilibrium. It has two solver families.
 
 1. **`NEO` / `NEO_JAX`** -- Computes effective ripple (epsilon_eff), a screening/optimization diagnostic. **NOT a transport state variable** -- does not feed into profile evolution. Runs in parallel with the transport code.
-2. **`SFINCS` / `sfincs_jax`** -- Solves the full drift-kinetic equation for neoclassical particle flux, heat flux, bootstrap current, and ambipolar E_r. Feeds `NEOPAX` (Stage 5).
+2. **`SFINCS` / `DKX`** -- Solves the full drift-kinetic equation for neoclassical particle flux, heat flux, bootstrap current, and ambipolar E_r. Feeds `NEOPAX` (Stage 5).
 
-**Position in pipeline:** `NEO_JAX` receives `boozmn_*.nc` from Stage 2 (Boozer). `sfincs_jax` solves on the `wout_*.nc` from Stage 1 (Equilibrium) and additionally reads the Stage 2 `boozmn_*.nc`, which fixes the minor radius its analytical profile grid is reconstructed on, so the radial scan follows Stage 2 in the DAG. Stage 3 runs in parallel with Stage 4 (Turbulence).
+**Position in pipeline:** `NEO_JAX` receives `boozmn_*.nc` from Stage 2 (Boozer). `DKX` solves on the `wout_*.nc` from Stage 1 (Equilibrium) and additionally reads the Stage 2 `boozmn_*.nc`, which fixes the minor radius its analytical profile grid is reconstructed on, so the radial scan follows Stage 2 in the DAG. Stage 3 runs in parallel with Stage 4 (Turbulence).
 
 **Reference:** `stellarator_workflow.tex`, Sections 4.4-4.5; `stellarator_io_reference.tex`, Sections 3.4-3.5.
 
@@ -88,13 +90,15 @@ Total `epstot` is the sum over classes.
 
 ---
 
-## Sub-Stage 3b: `SFINCS` / `sfincs_jax` (Full Neoclassical)
+## Sub-Stage 3b: `SFINCS` / `DKX` (Full Neoclassical)
 
 ### Codes
 
-**sfincs_jax (Primary JAX):** <https://github.com/uwplasma/sfincs_jax>
+**DKX (Primary JAX):** <https://github.com/uwplasma/DKX>
 
 **SFINCS (Legacy):** <https://github.com/landreman/sfincs>
+
+The DKX environments pin version 2.4.0 to [Git revision `94506ae337b7825a161a47a614511ab5b538b37b`](https://github.com/uwplasma/DKX/tree/94506ae337b7825a161a47a614511ab5b538b37b). DKX requires Python 3.11 or later and SOLVAX 0.21 or later. The stage lockfile supplies shared scientific packages through conda, including SOLVAX 0.22.
 
 ### Input Specification
 
@@ -103,7 +107,7 @@ Reference: `stellarator_io_reference.tex`, Section 3.5.
 | Field | Type | Required | Description | Source |
 |-------|------|----------|-------------|--------|
 | `input.namelist` | Fortran namelist text | **Yes** | Primary run configuration (all namelist groups). | User / workflow |
-| `wout_*.nc` or `.bc` equilibrium | NetCDF / Boozer file | **Yes** (directly or via `equilibriumFile`) | Magnetic geometry input. In `sfincs_jax`, CLI `--wout-path` / `--equilibrium-file` overrides the namelist path and is written into embedded `input.namelist` in output. | Stage 1 or user |
+| `wout_*.nc` or `.bc` equilibrium | NetCDF / Boozer file | **Yes** (directly or via `equilibriumFile`) | Magnetic geometry input. In `DKX`, CLI `--wout-path` / `--equilibrium-file` overrides the namelist path and is written into embedded `input.namelist` in output. | Stage 1 or user |
 | `boozmn_*.nc` | NetCDF | **Yes** for the radial scan | Not read by the solve. The scan takes the boundary `R00` from `rmnc_b` which, with the wout's `volume_p`, gives the minor radius NEOPAX grids on, and the analytical profile path reconstructs its faces on that grid. The bridge resolves it from `[geometry].boozer_file` in `common_input.toml` exactly as it resolves the wout from `[geometry].vmec_file`, and CLI `--boozer-path` overrides it. | Stage 2 |
 
 **Required input fields** :
@@ -141,18 +145,22 @@ The definitions below are for default values of 'nu_n', 'Delta' and 'alpha'
 - `Nzeta`: toroidal grid points.
 - `Nxi`: pitch-angle grid points.
 - `Nx`: energy grid points.
-- Solver tolerance: `solverTolerance` (commonly around $10^{-6}$ to $10^{-10}$ depending on the case and solver path). In this `sfincs_jax` checkout, this is the main named tolerance parameter exposed in the input namelist for the linear solve.
+- Solver tolerance: `solverTolerance` (commonly around $10^{-6}$ to $10^{-10}$ depending on the case and solver path). In this `DKX` checkout, this is the main named tolerance parameter exposed in the input namelist for the linear solve.
 
 > [!NOTE]
-> **Radial-scan bridge namelist overrides.** The `sfincs_jax_radial_scan.py` bridge that the Snakemake forward pass runs does not use the template namelist verbatim; it patches a fresh copy per flux surface. It sets `RHSMode = 1`, `inputRadialCoordinate = 3` (`rN`), and `rN_wish` to the surface's rho, and it **drops** `inputRadialCoordinateForGradients` from the template so `sfincs_jax` infers the gradient coordinates on its own (species gradients supplied as `dNHatdrNs`/`dTHatdrNs` select mode 3, and the potential gradient supplied as `Er` selects mode 4). Those two gradients are NEOPAX's own face gradients, written through with no scale factor and no coordinate change, rather than a finite difference the bridge takes across the profile arrays. `rN` **is** rho, so `dTHatdrNs = dT/drN` is exactly the per-rho quantity NEOPAX exports once it has been rescaled off its metre-valued face grid, in keV per unit rho against `THats` in keV, and `dNHatdrNs` in 1e20 m^-3 per unit rho against `nHats`. Which of the three profile sources supplies them, and how the analytical source rebuilds them where NEOPAX has not run, is recorded with the handoff file's provenance attributes below. Unless overridden on the command line, it also forces the reduced quickrun smoke-test resolution `Ntheta = 5, Nzeta = 11, Nxi = 12, NL = 3, Nx = 4, solverTolerance = 1e-6`, which overrides the raw `sfincs_jax` namelist defaults listed in the field table below.
+> **Radial-scan bridge namelist overrides.** `dkx_radial_scan.py` edits a new template copy for each surface. It sets `RHSMode = 1` and `inputRadialCoordinate = 3` (`rN`). It sets `rN_wish` to the surface's rho. Before writing `dNHatdrNs` and `dTHatdrNs`, it removes every template density and temperature gradient assignment, including mixed-case and indexed forms. DKX would select stale `rHat` gradients from the HSX template before the intended `rN` values. Removing the template gradients prevents this conflict. The script also removes `inputRadialCoordinateForGradients`. DKX then infers the coordinates for species gradients and the electric field independently. The species fields select mode 3. `Er` selects mode 4.
+>
+> These are NEOPAX's face gradients in units per rho. The script applies no further scale factor because `rN` equals rho. Temperatures use keV. Temperature gradients use keV per rho. Densities use units of 1e20 m^-3. Density gradients use units of 1e20 m^-3 per rho. The output provenance section below describes how the script handles each profile source.
+>
+> Unless overridden on the command line, the scan uses the reduced quick-run resolution `Ntheta = 5, Nzeta = 11, Nxi = 12, NL = 3, Nx = 4, solverTolerance = 1e-6`. The worker lets DKX read `solverTolerance` from the generated namelist.
 
 **Optional input fields** :
 
 **Phi1 / Electrostatic Effects:**
-- `includePhi1`: `.true./.false.` — supported in this `sfincs_jax` checkout; enables the Phi1 / quasineutrality / lambda block.
+- `includePhi1`: `.true./.false.` — supported in this `DKX` checkout; enables the Phi1 / quasineutrality / lambda block.
 - `includePhi1InKineticEquation`: supported, but only as the current parity-first / frozen-linearization implementation of Phi1 coupling in the kinetic equation.
 - `includePhi1InCollisionOperator`: supported for the Fokker-Planck (`collisionOperator = 0`) path, and requires `includePhi1 = .true.` plus `includePhi1InKineticEquation = .true.`.
-- `readExternalPhi1`: recognized in the input surface, but not currently supported end-to-end in this `sfincs_jax` checkout.
+- `readExternalPhi1`: recognized in the input surface, but not currently supported end-to-end in this `DKX` checkout.
 
 
 
@@ -183,7 +191,7 @@ The definitions below are for default values of 'nu_n', 'Delta' and 'alpha'
 | ambipolarSolveOption | integer | 1 | Conditional | When ambipolarSolve == .true. | Indicates which root solving algorithm to use for ambipolar solve |
 | Er\_min | real | -100 | Conditional | When ambipolarSolve == .true. and ambipolarSolveOption /= 3. | Minimum value of Er used to bracket the ambipolar root. |
 | Er\_max | real | 100 | Conditional | When ambipolarSolve == .true. and ambipolarSolveOption /= 3. | Maximum value of Er used to bracket the ambipolar root. |
-| geometryScheme | integer | 1 | No (defaulted) | Always | How the magnetic geometry is specified. In this `sfincs_jax` checkout, the implemented modes are `1`, `2`, `4`, `5`, `11`, and `12` |
+| geometryScheme | integer | 1 | No (defaulted) | Always | How the magnetic geometry is specified. In this `DKX` checkout, the implemented modes are `1`, `2`, `4`, `5`, `11`, and `12` |
 | inputRadialCoordinate | integer | 3 | Conditional | When the selected geometry needs a flux-surface choice | Which radial coordinate is used to select the target flux surface (`psiHat`, `psiN`, `rHat`, or `rN`) |
 | inputRadialCoordinateForGradients | integer | 4 | Conditional | Whenever profile / electric-field gradients are specified | Which radial coordinate is used for input gradients. `0/1/2/3/4` correspond to `psiHat`, `psiN`, `rHat`, `rN`, and `Er`-based input |
 | B0OverBBar | real | 1.0 | Conditional | Only when geometryScheme == 1 | Magnitude of (0,0) Boozer harmonic of B field |
@@ -231,14 +239,14 @@ The definitions below are for default values of 'nu_n', 'Delta' and 'alpha'
 | includeElectricFieldTermInXiDot | Boolean | .true. | Conditional | When radial E field is nonzero | Include pitch-angle-change term from E_r |
 | useDKESExBDrift | Boolean | .false. | Conditional | When radial electric-field terms are active | Use the DKES-style `E x B` drift formula rather than the full-trajectory form |
 | includePhi1 | Boolean | .false. | Conditional | Whenever RHSMode == 1 | Include first-order potential Phi1 |
-| readExternalPhi1 | Boolean | .false. | Conditional | When includePhi1 == .true. | Recognized input switch for reading `Phi1Hat` from an external file, but not currently supported end-to-end in this `sfincs_jax` checkout |
+| readExternalPhi1 | Boolean | .false. | Conditional | When includePhi1 == .true. | Recognized input switch for reading `Phi1Hat` from an external file, but not currently supported end-to-end in this `DKX` checkout |
 | externalPhi1Filename | string | ``externalPhi1.h5'' | Conditional | When readExternalPhi1 == .true. | Filename for the external `Phi1Hat` input in that same recognized-but-not-fully-supported path |
 | includePhi1InKineticEquation | Boolean | .true. | Conditional | When includePhi1 == .true. | Couple Phi1 into kinetic equation |
 | includePhi1InCollisionOperator | Boolean | .false. | Conditional | When includePhi1 == .true. | Include Phi1 in collision operator |
 | quasineutralityOption | integer | 1 | Conditional | When includePhi1 == .true. and readExternalPhi1 == .false. | Choice of quasineutrality equation (1 or 2) |
 | includeTemperatureEquilibrationTerm | Boolean | .false. | Conditional | Whenever RHSMode == 1 | Include temperature equilibration term |
 | magneticDriftScheme | integer | 0 | Conditional | Whenever RHSMode == 1 | Control poloidal/toroidal magnetic drifts |
-| EParallelHatSpec | 1D array of reals | 0.0 | Conditional | When used in kinetic solves | Species-dependent parallel forcing / drive term; this is not one of the most commonly used public `sfincs_jax` input paths |
+| EParallelHatSpec | 1D array of reals | 0.0 | Conditional | When used in kinetic solves | Species-dependent parallel forcing / drive term; this is not one of the most commonly used public `DKX` input paths |
 | Ntheta | integer | 15 | No (defaulted) | Always | Poloidal grid points |
 | Nzeta | integer | 15 | No (defaulted) | Always | Toroidal grid points per period |
 | Nxi | integer | 16 | No (defaulted) | Always | Pitch-angle grid (Legendre polynomials) |
@@ -301,37 +309,86 @@ The definitions below are for default values of 'nu_n', 'Delta' and 'alpha'
 > [!TODO]
 > See [I/O Validation section](../guide.md#io-validation).
 
+#### Optional gradient responses
+
+Set the following controls under `stage3.dkx` in `config.yaml`. The command line accepts the same names with hyphens, such as `--response-mode fd_gradients`.
+
+```yaml
+stage3:
+  dkx:
+    response_mode: fd_gradients
+    perturb_density_species: "D,e"
+    perturb_temperature_species: "D,e"
+    dkap_density: 0.5
+    dkap_temperature: 0.5
+    perturb_rel_step: 0.5
+```
+
+`response_mode` defaults to `none`. Species selections default to empty. Step controls default to `0.5`. In `fd_gradients` mode, preparation matches names without regard to case and stores the spelling from `[species].names`, so selecting `d` stores `D` when the input species is `D`. Within each channel, it keeps only the first occurrence of each name. Preparation rejects unknown names and input names that differ only by case. Selected names must match `\w+` for scheduling. Select at least one species. Each radius gets a baseline and siblings ending in `_fd_n_<species>` or `_fd_t_<species>`.
+
+The normalized gradients are `kappa_n = -(dn/d(rho))/n` and `kappa_T = -(dT/d(rho))/T`. The density channel uses `delta = -max(dkap_density, perturb_rel_step * abs(kappa_n))`. It adds `delta` to `kappa_n`. It subtracts the same value from `kappa_T` to preserve the species pressure gradient. The temperature channel uses `delta = max(dkap_temperature, perturb_rel_step * abs(kappa_T))`. It changes only `kappa_T`. The writer converts these gradients back to `dNHatdrNs` and `dTHatdrNs` per unit `rho`. Local density, temperature, geometry and `Er` stay fixed. The gradients of all other species stay fixed. In `fd_gradients` mode, step controls must be finite and nonnegative, and effective steps must be finite and nonzero.
+
 ### Output Specification
 
 
-The Snakemake forward pass runs the `sfincs_jax` radial scan as a per-surface fan-out (`stage3_prepare` checkpoint, one `stage3_run_one` job per flux surface, then `stage3_collect`; see [Per-surface fan-out](../mvp-pipeline.md#per-surface-fan-out-stages-3-and-4)). It produces one aggregated handoff file plus a per-surface run tree.
+The Snakemake forward pass runs the `DKX` radial scan through the `stage3_prepare` checkpoint, one `stage3_run_one` job per baseline or perturbation, and `stage3_collect`. It produces one aggregated handoff file plus a per-surface run tree. See [Per-surface fan-out](../mvp-pipeline.md#per-surface-fan-out-stages-3-and-4).
 
-**Forward-chain handoff:** `sfincs_jax_flux_profiles.h5` (HDF5) -- flux profiles versus radius, consumed by `NEOPAX` (Stage 5). The `collect` step assembles it from every per-surface `result.json`. Its schema is the exact subset checked by the in-repo contract validator `src/io_contracts.py` (`validate_sfincs_flux`):
+The forward pass supplies flux profiles versus radius to `NEOPAX` (Stage 5) in the HDF5 file `dkx_flux_profiles.h5`. The `collect` step builds this file from every per-surface `result.json`. The root contract validator `validate_dkx_flux` in `src/io_contracts.py` checks the following schema:
 
 | Dataset | Shape | Meaning |
 |---------|-------|---------|
 | `rho` | `(n_radii,)` | Normalized radial coordinate of each aggregated surface |
-| `r` | `(n_radii,)` | Radial coordinate written from `sfincs_jax`'s `rHat` (alias of `rHat`) |
-| `rHat` | `(n_radii,)` | `sfincs_jax` `rHat` radial coordinate |
+| `r` | `(n_radii,)` | Radial coordinate written from `DKX`'s `rHat` (alias of `rHat`) |
+| `rHat` | `(n_radii,)` | `DKX` `rHat` radial coordinate |
 | `Gamma` | `(n_species, n_radii)` | Neoclassical particle flux in NEOPAX units |
 | `Q` | `(n_species, n_radii)` | Neoclassical heat flux in NEOPAX units |
 | `Upar` | `(n_species, n_radii)` | Parallel-flow observable |
 | `species_names` | `(n_species,)` | UTF-8 species labels (root dataset) |
 
-Root attributes:
+The validator requires finite, strictly increasing radial coordinates, equal `r` and `rHat`, consistent species and radius dimensions, and finite flux values. If `axis_zero_padded` is true, the first radius and flux column must be zero. The standalone scan and `collect` accept `--output` for a custom aggregate path. Without this option, the command writes the file under `--output-dir`.
+
+**Gradient-response datasets**
+
+Response mode keeps baseline `Gamma`, `Q` and `Upar` on a unique radial axis. It adds the following datasets. `P` counts pairs of channel and input species. `S` counts output species. `R` counts radii, including any synthetic axis.
+
+| Dataset | Shape | Meaning |
+| --- | --- | --- |
+| `Gamma_perturbed`, `Q_perturbed` | `(P, S, R)` | Full perturbed fluxes in baseline units |
+| `perturb_delta` | `(P, R)` | Signed normalized-gradient increment |
+| `perturb_present` | `(P, R)` | Boolean mask, true where a perturbation was measured |
+| `response_label` | `(P,)` | `density_gradient` or `temperature_gradient` |
+| `perturb_species` | `(P,)` | Name of the perturbed input species |
+
+Pairs follow the density species list, then the temperature species list. Output species follow `species_names`. Compute `(F_perturbed - F_base)/delta` only where `perturb_present` is true. The density response includes the compensating temperature-gradient change. At a synthetic axis, response fluxes and increments are zero. The writer sets `perturb_present = false` there. The writer exports no `Upar` response. Baseline mode omits these six datasets.
+
+The collector reads fluxes from `result.json` and signed steps from the manifest, without reading namelists. Existing scans must run `prepare` with this version before collection, which regenerates the manifest and reuses matching completed results.
+
+The `response_note` attribute describes the response convention when these datasets are present. The baseline contract validator accepts extra datasets but does not validate the response schema.
+
+The writer keeps `r = rHat`. It stores `rho` separately. [NEOPAX compatibility work](../potential_issues.md#stage-5----transport) covers the gradient basis and radial grid.
+
+Root attributes
+
 - `axis_zero_padded` (bool, **required** by the contract): the scan drops the magnetic-axis (`rho = 0`) surface, so when no aggregated surface sits at `rho = 0` the `collect` step prepends a zero-flux `rho = 0` column and sets this flag `true`.
-- Provenance echoes read back from the scan `manifest.json` rather than measured live: `backend`, `max_parallel`, `worker_sharding`, `profiles_source`, `source_transport_solution`, `source_sfincs_template`, `time_index`, `time_value`, `include_phi1`. `profiles_source` is one of `analytical` (kinetic profiles built from the analytical parameters in the `common_input.toml` `[profiles]` block, on `analytical_n_radii` cell faces), `transport_h5` (read from a NEOPAX `transport_solution.h5`, taking its `rho_face` / `*_faces` face state rather than the cell-centered datasets, for the same reason as `prescribed`), or `prescribed` (read from SI profile arrays written into that same `[profiles]` block by the closed loop's Stage 5 post-processing; see [Closing the Loop](../mvp-pipeline.md#closing-the-loop) for the array contract). The latter two take their radial grid from the profile data rather than from `analytical_n_radii`. Under `prescribed` the scan reads the block's `*_face` arrays and samples the transport **face** grid `linspace(0, rho_edge, n_radial + 1)`, not the cell-centered arrays NEOPAX itself reads back; a block carrying only the centered arrays is rejected rather than extrapolated. `analytical_n_radii` counts cell **faces** and defaults to `[geometry].n_radial + 1`, the transport face grid, matching Stage 4. Iteration 1 of the closed loop therefore scans the radii iterations 2 onward read back under `prescribed`, and the face reconstruction described next runs on NEOPAX's own faces, where it reproduces NEOPAX rather than approximating it. An explicit larger or smaller value is still accepted and is still valid input for NEOPAX to interpolate from, since any face grid spanning `[0, rho_edge]` is, but off NEOPAX's faces the reconstruction is a discretization of its own.
+- Provenance echoes read back from the scan `manifest.json` rather than measured live: `backend`, `max_parallel`, `profiles_source`, `source_transport_solution`, `source_dkx_template`, `time_index`, `time_value`, `include_phi1`. `profiles_source` is one of `analytical` (kinetic profiles built from the analytical parameters in the `common_input.toml` `[profiles]` block, on `analytical_n_radii` cell faces), `transport_h5` (read from a NEOPAX `transport_solution.h5`, taking its `rho_face` / `*_faces` face state rather than the cell-centered datasets, for the same reason as `prescribed`), or `prescribed` (read from SI profile arrays written into that same `[profiles]` block by the closed loop's Stage 5 post-processing; see [Closing the Loop](../mvp-pipeline.md#closing-the-loop) for the array contract). The latter two take their radial grid from the profile data rather than from `analytical_n_radii`. Under `prescribed` the scan reads the block's `*_face` arrays and samples the transport **face** grid `linspace(0, rho_edge, n_radial + 1)`, not the cell-centered arrays NEOPAX itself reads back; a block carrying only the centered arrays is rejected rather than extrapolated. `analytical_n_radii` counts cell **faces** and defaults to `[geometry].n_radial + 1`, the transport face grid, matching Stage 4. Iteration 1 of the closed loop therefore scans the radii iterations 2 onward read back under `prescribed`, and the face reconstruction described next runs on NEOPAX's own faces, where it reproduces NEOPAX rather than approximating it. An explicit larger or smaller value is still accepted and is still valid input for NEOPAX to interpolate from, since any face grid spanning `[0, rho_edge]` is, but off NEOPAX's faces the reconstruction is a discretization of its own.
 - The `dNHatdrNs` / `dTHatdrNs` the bridge patches into each namelist reach it by the same mechanism Stage 4's `tprim` / `fprim` do, which the [Stage 4 spec](../stage4-turbulence/spec.md#aggregated-forward-pass-outputs-radial-scan) documents once for both stages. `transport_h5` reads `density_grad_faces` / `temperature_grad_faces` out of the solution and rescales them from per metre onto rho; `prescribed` reads `density_grad_face` / `temperature_grad_face` out of the `[profiles]` block, already per unit rho; and `analytical` samples the profile formula on the cell centers the faces bound, then rebuilds both the face values and the face gradients with `stages/common/profile_gradients.py`, the NumPy port of NEOPAX's `CellVariable.face_grad` and `CellVariable.face_value`, under the run's `[boundary]` blocks. Only the consumer differs. Stage 3 takes the gradient plain, without the logarithm and sign flip Stage 4's `tprim` applies.
 - Unit / convention notes: `Upar_note`, `normalization_note`, `radius_note` (how `Gamma`/`Q`/`Upar` are converted to NEOPAX units and which coordinate `r`/`rHat` carries).
+- `solver_name`, `solver_version`, `solver_revision`, and `wout_sha256` identify the installed solver and equilibrium content.
 
-**Per-surface run tree** (under `outputs/<run>/stage3_neoclassical/`): `manifest.json` at the stage directory records the surfaces and provenance the `collect` step reduces over; `runs/rho_*/` holds one directory per surface (basenames like `rho_012_r0p4898`), each with `input.namelist` (patched per surface), `payload.json` (worker inputs), `sfincsOutput.h5` (native per-surface solver output), and `result.json` (the extracted fluxes `collect` reads).
+**Per-surface run tree** under `outputs/<run>/stage3_neoclassical/`. The stage's `manifest.json` records the runs and provenance for collection. Each surface has a baseline directory such as `runs/rho_012_r0p4898/`, plus a directory for each selected perturbation with an `_fd_n_<species>` or `_fd_t_<species>` suffix. Each directory contains `input.namelist`, `payload.json`, native `sfincsOutput.h5`, and extracted `result.json`.
 
-**Native SFINCS output (per surface):** `sfincsOutput.h5` (HDF5) -- the native solver file. The `sfincs_jax` radial scan writes one per flux surface (under `runs/rho_*/`) and aggregates them into the handoff above; the standalone `SFINCS` (Fortran) binary writes it directly. Its fields:
+Benchmark repeats and warmup apply to baseline runs only. Each perturbation is solved once because collection reports baseline timings only.
 
-| Field | Availability | Meaning | Primary Use | Normalization | Units |
-|-------|--------------|---------|-------------|---------------|----|
-| `particleFlux_vm_rN` | `RHSMode=1` solve outputs | Neoclassical particle flux in vm normalization (`rN` coordinate) | **Transport input** | `vm` flux normalization, reported on `rN` radial coordinate |
-| `heatFlux_vm_rN` | `RHSMode=1` solve outputs | Neoclassical heat flux in vm normalization (`rN` coordinate) | **Transport input** | `vm` flux normalization, reported on `rN` radial coordinate |
+Preparation must run in the DKX stage environment. It reads the installed DKX metadata. It reuses a result only when the generated namelist, installed DKX identity, equilibrium digest, and surface data agree. If the Git revision or WOUT digest is unavailable, preparation reports why reuse is disabled. The WOUT path can come from `--wout-path` or the common configuration. Preparation removes an invalid `result.json` so Snakemake schedules the surface again. On each rerun, the worker clears its completion file before solving. It writes a replacement only after a successful solve and diagnostic validation. Collection rejects missing or incompatible results before opening the aggregate destination.
+
+The worker calls `dkx.api.write_output` followed by `dkx.api.read_output`. It requires `particleFlux_vm_rHat`, `heatFlux_vm_rHat`, `FSABFlow`, `rHat`, and `B0OverBBar`. DKX iteration arrays use the first dimension for species. The scan uses the final iteration after checking its values. The surface run fails if diagnostics are missing or malformed, final values are nonfinite, or unit conversion overflows. The scan applies the established physical conversions to particle and heat fluxes to produce NEOPAX units. It converts parallel flow with `2*B0OverBBar/sqrt(pi)` times `FSABFlow`. The scan does not substitute radial flux fields with different normalizations. Values for each surface remain in the native HDF5 and result records. Aggregate metadata describes the shared fields and conversions.
+
+**Native SFINCS output (per surface):** `sfincsOutput.h5` (HDF5) -- the native solver file. The `DKX` radial scan writes one per flux surface (under `runs/rho_*/`) and aggregates them into the handoff above; the standalone `SFINCS` (Fortran) binary writes it directly. Its fields:
+
+| Field | Availability | Meaning | Primary Use | Normalization |
+|-------|--------------|---------|-------------|---------------|
+| `particleFlux_vm_rHat` | `RHSMode=1` solve outputs | Neoclassical particle flux in vm normalization (`rHat` coordinate) | **Scan transport input** | `vm` flux normalization, reported on `rHat` radial coordinate |
+| `heatFlux_vm_rHat` | `RHSMode=1` solve outputs | Neoclassical heat flux in vm normalization (`rHat` coordinate) | **Scan transport input** | `vm` flux normalization, reported on `rHat` radial coordinate |
 | `particleFlux_vd_rN`, `heatFlux_vd_rN` | when `includePhi1=.true.` diagnostics are written | Total (magnetic + `E×B`) flux variants with `Phi1` effects | Transport input (Phi1-on workflows) | `vd` (drift + `E×B`) flux normalization, reported on `rN` |
 | `FSABjHat` | solved runs | Flux-surface-averaged parallel current (bootstrap diagnostic) | Equilibrium/diagnostic coupling | `Hat` quantity (SFINCS normalized current) and flux-surface-averaged (`FSAB`) |
 | `FSABFlow` | solved runs | Flux-surface-averaged parallel flow by species | Diagnostic | SFINCS normalized flow; flux-surface-averaged (`FSA/FSAB`) |
@@ -391,10 +448,9 @@ Common conditional physics outputs:
 - `full_f`: total distribution (Maxwellian + perturbation).
 - `export_f_theta`, `export_f_zeta`, `export_f_xi`, `export_f_x`: parameter specification for export grid resolution.
 
-**Solver Diagnostics** (sfincs_jax-specific):
+**Solver Diagnostics** (DKX-specific):
 - `linearSolver*`: residual norms, iteration counts, convergence flags, and related solve metadata written for `RHSMode=1` output solves.
 - `transportMatrix`: full matrix when `RHSMode=2/3` is run with `--compute-transport-matrix`.
-- `QN_*` (conditional, env var `SFINCS_JAX_WRITE_QN_DIAGNOSTICS`): debug terms from quasineutrality solve.
 
 **Handoff to `Trinity3D`:** The `Trinity3D` adapter reads:
 - When `includePhi1=.false.` (standard neoclassical): `particleFlux_vm_rN`, `heatFlux_vm_rN`.
@@ -429,11 +485,13 @@ When Phi1 is included, coupled to quasineutrality.
 pixi install --environment stage-3-sfincs-fortran
 ```
 
-**`sfincs_jax`:** Install via the Pixi environment. From the `stages`/ directory:
+Install DKX from the locked Pixi environment. From the `stages/` directory, run:
 
 ```
-pixi install --environment stage-3-sfincs
+pixi install --locked --environment stage-3-dkx
 ```
+
+The CPU environment supports Linux x86-64, Linux ARM64, and macOS ARM64. `stage-3-dkx-gpu` targets Linux x86-64 with CUDA 12.
 
 **`neo-jax`:** Install via the Pixi environment. From the `stages`/ directory:
 
@@ -464,19 +522,25 @@ See `docs/mvp-pipeline.md` for run commands and I/O details.
 
 ## Scripts & Workflows
 
-**`sfincs_jax` (via Pixi):** From the `stages`/ directory:
+For a native single-surface DKX output, run the direct Pixi task from `stages/` after Stage 1.
 
+```sh
+pixi run --locked -e stage-3-dkx stage-3-dkx
 ```
-pixi run stage-3-sfincs
+
+The task calls `dkx sfincs write-output` with `--input`, `--out`, and `--equilibrium-file`. It uses `sfincs_input.HSX_vacuum_ns201_quickrun` and the Stage 1 wout. It writes `outputs/quick_run/stage3_neoclassical/sfincsOutput_quickrun.h5`.
+
+For the aggregate consumed by NEOPAX, run the radial scan after Stages 1 and 2.
+
+```sh
+pixi run --locked -e stage-3-dkx stage-3-dkx-radial-scan --max-parallel 1
 ```
 
-> [!NOTE]
-> The pixi task and the Snakemake `stage3_prepare` checkpoint both pass the wout path to `sfincs_jax` via `--wout-path`. Populate `outputs/quick_run/stage1_equilibrium/` by running `pixi run stage-1-vmec` first. The namelist's `equilibriumFile` field is retained as a fallback for the `sfincs_fortran` backend and for direct `sfincs_jax` invocations that omit `--wout-path`.
+The scan uses `common_input.toml` for profiles and geometry paths. It writes `outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5`. Use `--dkx-template` to override the namelist template. Use `--wout-path` to override VMEC geometry. Use `--boozer-path` to override the Boozer file used for the analytical radius. Use `--output` to change the aggregate filename. Snakemake supplies the equivalent configuration through `stage3.dkx`.
 
-**Input:** `outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc` + `inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun`
-**Output:** `outputs/quick_run/stage3_neoclassical/sfincs_jax_flux_profiles.h5`
+Use a positive `--cores-per-run` to set CPU threads through `DKX_CORES`. A zero or negative value keeps an inherited `DKX_CORES` value, or lets DKX use its default if the variable is unset. Inherited `DKX_CORES=0` enables full-width sizing. BLAS and OMP pools retain a minimum of one thread. Use `--max-parallel` for simultaneous workers. Use `--gpu-ids` with `--backend gpu` to select devices.
 
-See `docs/mvp-pipeline.md` for full I/O details.
+See [the MVP reference](../mvp-pipeline.md#stage-3----neoclassical) for commands from the repository root and the difference between native output and the aggregate.
 
 **`SFINCS` (Fortran, via Pixi):** From the `stages`/ directory:
 
@@ -484,10 +548,10 @@ See `docs/mvp-pipeline.md` for full I/O details.
 pixi run stage-3-sfincs-fortran
 ```
 
-Alternative implementation to `sfincs_jax`. Consumes the same input namelist and writes the native `sfincsOutput.h5`, a different file from the `sfincs_jax_flux_profiles.h5` forward-chain handoff and not wired into the Snakemake forward pass; the task stages the namelist as `input.namelist` in the output directory before invocation because the Fortran binary reads that filename from its working directory.
+Alternative implementation to `DKX`. Consumes the same input namelist and writes the native `sfincsOutput.h5`, a different file from the `dkx_flux_profiles.h5` forward-chain handoff and not wired into the Snakemake forward pass; the task stages the namelist as `input.namelist` in the output directory before invocation because the Fortran binary reads that filename from its working directory.
 
-**Input:** same as `sfincs_jax` above.
-**Output:** `outputs/quick_run/stage3_neoclassical/sfincsOutput.h5` (the native SFINCS file, separate from the `sfincs_jax` handoff).
+**Input:** the Stage 1 wout and the shared `sfincs_input.HSX_vacuum_ns201_quickrun` namelist.
+**Output:** `outputs/quick_run/stage3_neoclassical/sfincsOutput.h5` (the native SFINCS file, separate from the `DKX` handoff).
 
 See `docs/mvp-pipeline.md` for full I/O details.
 
@@ -507,14 +571,14 @@ See `docs/mvp-pipeline.md` for full I/O details.
 
 ## Container Specification (Phase 2)
 
-**`sfincs_jax`:** Built from the single templated `stages/Dockerfile` using build arguments:
+**`DKX`:** Built from the single templated `stages/Dockerfile` using build arguments:
 
 ```
-docker build --file stages/Dockerfile --build-arg ENVIRONMENT=stage-3-sfincs stages/        # CPU
-docker build --file stages/Dockerfile --build-arg ENVIRONMENT=stage-3-sfincs-gpu --build-arg CUDA_VERSION=12 stages/  # GPU
+docker build --file stages/Dockerfile --build-arg ENVIRONMENT=stage-3-dkx stages/        # CPU
+docker build --file stages/Dockerfile --build-arg ENVIRONMENT=stage-3-dkx-gpu --build-arg CUDA_VERSION=12 stages/  # GPU
 ```
 
-Published to GHCR as `ghcr.io/driftless-star/driftless-star:stage-3-sfincs-cpu` and `stage-3-sfincs-gpu`. CI builds via `.github/workflows/containers.yml`.
+CI is configured to build and publish `ghcr.io/driftless-star/driftless-star:stage-3-dkx-cpu` and `stage-3-dkx-gpu` through `.github/workflows/containers.yml`. Apptainer references use the corresponding `apptainer-stage-3-dkx-cpu` and `apptainer-stage-3-dkx-gpu` tags.
 
 See [guide](../guide.md#container-architecture) for full architecture details.
 

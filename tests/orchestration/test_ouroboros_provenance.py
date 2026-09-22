@@ -135,7 +135,7 @@ def test_effective_config_sits_alongside_the_verbatim_copy(
     for key in ("s1_input", "s3_config", "s4_config", "s5_config"):
         base_file = Path(base_p[key])
         base_file.parent.mkdir(parents=True, exist_ok=True)
-        base_file.write_text(f"base {key}")
+        base_file.write_text("[geometry]\nrho_edge = 1.0\n" if key == "s5_config" else f"base {key}")
 
     monkeypatch.setattr(ouroboros, "run_forward_pass", _fake_forward_pass)
     monkeypatch.setattr("sys.argv", ["ouroboros", "--config", str(config_path), "--max-iters", "1",

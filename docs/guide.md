@@ -6,9 +6,9 @@ driftless-star implements the stellarator design workflow described in the compa
 - `stellarator_workflow.tex` -- governing equations and code-by-code details
 - `stellarator_io_reference.tex` -- input/output contracts and handoff specifications
 
-**Goal:** A working forward pass -- a single traversal of the pipeline from boundary Fourier coefficients and profile guesses through to transport-consistent profiles and fusion-power metrics (P_fus, Q). An initial **closed loop** is now implemented on top of this: Stage 5's transport solution is fit back into the Stage 1 pressure profile and the forward pass re-run, iterating toward a transport-consistent equilibrium via the external `ouroboros` driver (see [Closing the Loop](mvp-pipeline.md#closing-the-loop)). The re-run rebuilds the equilibrium, so the updated geometry flows on to Stages 3/4, and from iteration 2 the transport-evolved n(r)/T(r)/E_r(r) are prescribed to Stages 3/4/5 as well, so every profile consumer reads the previous pass's transport solution. Individual stages can be frozen after iteration 1 with the per-stage [`loop.rerun`](mvp-pipeline.md#per-stage-rerun-flags) flags. One extension remains future work: feeding back the **current** profile (only pressure is fit today).
+**Goal:** Run one forward pass from boundary Fourier coefficients and profile guesses to transport-consistent profiles and fusion-power metrics (P_fus, Q). The **closed loop** uses the external `ouroboros` driver to repeat the forward pass toward a transport-consistent equilibrium (see [Closing the Loop](mvp-pipeline.md#closing-the-loop)). By default, Stage 5 fits its transport face pressure to a polynomial for Stage 1. The loop also accepts Akima and cubic splines. Each new pass rebuilds the equilibrium. Stages 3/4 use the updated geometry. From iteration 2, Stages 3/4/5 use the transport-evolved n(r)/T(r)/E_r(r) as prescribed profiles. Each profile consumer therefore reads the previous pass's transport solution. Use the per-stage [`loop.rerun`](mvp-pipeline.md#per-stage-rerun-flags) flags to freeze individual stages after iteration 1. Feedback for the **current** profile remains future work. Currently, only pressure feeds back to Stage 1.
 
-**JAX-first strategy:** The pipeline prioritizes JAX-native implementations for differentiability and tight integration: `vmec_jax` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `NEOPAX`. Other codes (`VMEC++`, `BOOZ_XFORM`, `NEO_JAX`, `NEO`, `SFINCS`, `GX`, `GENE`, `Trinity3D`) are swappable alternatives.
+The pipeline prioritizes JAX-native implementations for differentiability and integration. The forward pass follows `vmex` -> `booz_xform_jax` -> `{DKX, GKX}` -> `NEOPAX`. Other codes (`VMEC++`, `BOOZ_XFORM`, `NEO_JAX`, `NEO`, `SFINCS`, `GX`, `GENE`, `Trinity3D`) are swappable alternatives.
 
 ## Pipeline Architecture
 
@@ -19,9 +19,9 @@ driftless-star implements the stellarator design workflow described in the compa
 
 | Stage | Physics | JAX Primary | Alternatives | Input Artifacts | Output Artifacts |
 |-------|---------|-------------|--------------|-----------------|------------------|
-| 1. Equilibrium | Ideal-MHD force balance | `vmec_jax`, `DESC` | `VMEC++` | INDATA/JSON boundary coefficients, pressure/iota/current coefficients, PHIEDGE | `wout_*.nc` (NetCDF) |
+| 1. Equilibrium | Ideal-MHD force balance | `vmex`, `DESC` | `VMEC++` | INDATA/JSON boundary coefficients, pressure/iota/current coefficients, PHIEDGE | `wout_*.nc` (NetCDF) |
 | 2. Boozer Transform | Coordinate transform to Boozer angles | `booz_xform_jax` | `BOOZ_XFORM` | `wout_*.nc` | `boozmn_*.nc` (NetCDF) |
-| 3. Neoclassical | Effective ripple, drift-kinetic transport | `NEO_JAX`, `sfincs_jax` | `NEO`, `SFINCS` | `NEO_JAX`: `boozmn_*.nc`; `SFINCS`: `wout_*.nc` + input file | `neo_out.*`, `sfincs_jax_flux_profiles.h5` |
+| 3. Neoclassical | Effective ripple, drift-kinetic transport | `NEO_JAX`, `DKX` | `NEO`, `SFINCS` | `NEO_JAX` uses `boozmn_*.nc`. The DKX scan uses `wout_*.nc`, `boozmn_*.nc`, profiles, and a namelist. | `neo_out.*`, `dkx_flux_profiles.h5` |
 | 4. Turbulence | Delta-f gyrokinetic equation | `GKX` | `GX`, `GENE` | Geometry + species profiles/gradients | gamma, omega, heat/particle flux (NetCDF/CSV) |
 | 5. Transport | 1D conservation laws for n_s, p_s | `NEOPAX` | `Trinity3D` | geometry + fluxes | n(r), T(r), E_r(r), P_fus, Q (HDF5/NetCDF) |
 
@@ -34,7 +34,7 @@ driftless-star implements the stellarator design workflow described in the compa
 
 Currently, most inter-stage communication is **file-based** using standard physics file formats:
 - **NetCDF** (`.nc`): equilibrium (`wout_*.nc`), Boozer (`boozmn_*.nc`), turbulence outputs
-- **HDF5** (`.h5`): neoclassical outputs (`sfincs_jax_flux_profiles.h5`), `NEOPAX` profiles
+- **HDF5** (`.h5`): neoclassical outputs (`dkx_flux_profiles.h5`), `NEOPAX` profiles
 
 Snakemake rules define which files connect which stages. Each stage's `spec.md` is the authoritative source for required/optional fields in its output files. Where alternative implementations use different file formats or field names, a wrapper or adapter layer will be needed to translate between them.
 
@@ -43,7 +43,7 @@ Snakemake rules define which files connect which stages. Each stage's `spec.md` 
 **Key points** from the TeX manuscripts:
 
 1. **Screening-only outputs vs. transport state variables.** `NEO_JAX`'s epsilon_eff is central to ranking candidate geometries but is NOT advanced by a transport solver. It should not be wired as a transport input.
-2. **Dual-role outputs.** Heat/particle flux from `GKX` and neoclassical flux from `SFINCS` are simultaneously optimization objectives (to minimize) AND direct numerical inputs for transport profile evolution.
+2. **Dual-role outputs.** Heat/particle flux from `GKX` and neoclassical flux from `DKX` are simultaneously optimization objectives (to minimize) AND direct numerical inputs for transport profile evolution.
 3. **Turbulence coupling.** `NEOPAX` has turbulence-coupling utilities, but the `GKX` -> `NEOPAX` path (Stage 4 -> Stage 5) is not yet the default.
 
 ### Swappability Patterns
@@ -82,7 +82,7 @@ The pipeline should eventually support config-driven implementation swapping. Po
 1. Fork the repository and branch from `main` (e.g., `feat/stage1-newsoftware`, `fix/update-naming-schema`)
 2. Work through the relevant phase below
 3. Open a PR from the fork when deliverables are ready and request a review
-4. After review and merge, the corresponding progress item in the [README](../README.md#progress) gets checked off
+4. Keep the relevant stage specification up to date as the implementation changes.
 
 ## Phase 1: Document & Run
 
@@ -135,7 +135,7 @@ Work through these steps in order. Each step should result in updates to the sta
 
 Conventions:
 - **Project name:** `driftless-star-stage{N}-{name}` (e.g., `driftless-star-stage1-equilibrium`)
-- **Run naming:** `{code}_{config}_{timestamp}` (e.g., `vmec_jax_qa_2026-04-01T12:00`)
+- **Run naming:** `{code}_{config}_{timestamp}` (e.g., `vmex_qa_2026-04-01T12:00`)
 - **Metrics to log:** Stage-specific convergence metrics, runtime, key physics outputs (see the spec for guidance)
 - Create a dashboard with the most important panels for the stage
 - Fill in the "W&B Tracking" section of the relevant spec
@@ -162,7 +162,7 @@ driftless-star is a **recipe repo**: it contains everything needed to build and 
 
 **Two decoupled Pixi workspaces.** The repo splits dependency management along the orchestration / physics boundary:
 - **Root `pixi.toml`** -- orchestration. `pipeline` (`snakemake-minimal`, `graphviz`, `pytest`, plus the HTCondor executor plugin on linux-64) and `test`, which adds the numerical libraries the test suite needs. Both are installed directly on the execution node; Snakemake is never containerized for a local run, because nested containers are fragile and not widely supported on shared compute.
-- **`stages/pixi.toml`** -- per-stage physics environments (e.g., `stage-1-vmec`, `stage-1-vmec-gpu`) that fully specify each stack. These are only consumed by the container builder, so they are entirely isolated from the orchestration env.
+- **`stages/pixi.toml`** -- per-stage physics environments (e.g., `stage-1-vmex`, `stage-1-vmex-gpu`) that fully specify each stack. These are only consumed by the container builder, so they are entirely isolated from the orchestration env.
 
 Each workspace has its own lockfile (`pixi.lock` / `stages/pixi.lock`).
 
@@ -176,17 +176,17 @@ Because the executor formats each remote command line using the **submit host's*
 - **`stages/stage{N}-{name}/*.py`** -- physics scripts. Self-contained scripts that import the upstream solver and do the numerical work (e.g., radial flux scans, the Boozer transform, pressure post-processing). They run *inside* the stage containers, and `stages/` is the Docker build context.
 - **`src/stage{N}_helper.py`** -- orchestration helpers. Small modules the `Snakefile` imports on the execution node (in the root `pipeline` env, never containerized) and that contain no physics. Stages 3 and 4 compose each stage's `docker run ...` command from its `config.yaml` block; Stage 5 writes a path-resolved copy of the NEOPAX config.
 
-So `src/stage3_helper.py` *builds* the command, while `stages/stage3-neoclassical/sfincs_jax_radial_scan.py` is what that command *runs* inside the container.
+So `src/stage3_helper.py` *builds* the command, while `stages/stage3-neoclassical/dkx_radial_scan.py` is what that command *runs* inside the container.
 
 **Templated container images.** A single shared `stages/Dockerfile` and `stages/apptainer.def` use build arguments to select the target environment at build time:
-- `ENVIRONMENT` -- the Pixi environment name (e.g., `stage-1-vmec`, `stage-2-booz-jax-gpu`). Must be passed explicitly when building locally:
-   - `docker build --build-arg ENVIRONMENT=stage-1-vmec stages/`
-   - `cd stages && apptainer build --build-arg ENVIRONMENT="stage-1-vmec" stage-1-vmec.sif apptainer.def`
+- `ENVIRONMENT` -- the Pixi environment name (e.g., `stage-1-vmex`, `stage-2-booz-jax-gpu`). Must be passed explicitly when building locally:
+   - `docker build --build-arg ENVIRONMENT=stage-1-vmex stages/`
+   - `cd stages && apptainer build --build-arg ENVIRONMENT="stage-1-vmex" stage-1-vmex.sif apptainer.def`
 - `CUDA_VERSION` -- set for GPU builds (e.g., `12`), left empty for CPU builds
 
 The Dockerfile uses a multi-stage build on a `ghcr.io/prefix-dev/pixi:noble` base image. See `stages/Dockerfile` for implementation details.
 
-**Container images** are published to GHCR at `ghcr.io/driftless-star/driftless-star`. For MVP, the tags follow the pattern `stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmec-cpu`). Apptainer container images are prefixed with `apptainer-`. CI builds all stage variants from the container image definition files using a GitHub Actions matrix. See `.github/workflows/containers.yml` and `.github/actions/build-docker/action.yml` for the CI setup.
+**Container images** are published to GHCR at `ghcr.io/driftless-star/driftless-star`. For MVP, the tags follow the pattern `stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmex-cpu`). Apptainer container images are prefixed with `apptainer-`. CI builds all stage variants from the container image definition files using a GitHub Actions matrix. See `.github/workflows/containers.yml` and `.github/actions/build-docker/action.yml` for the CI setup.
 
 **Adding or updating a stage dependency:**
 1. Update `stages/pixi.toml` (add/change the dependency or git rev)
@@ -226,10 +226,10 @@ Updating the orchestration env follows the same pattern against the root `pixi.t
 ### Writing Tests
 
 **Unit tests.** Test mathematical invariants specific to the stage. Examples:
-- Stage 1: force-balance residual decreases monotonically during convergence
+- Stage 1: force-balance residuals meet the input tolerance when the solver reports convergence
 - Stage 2: (|B|_VMEC - |B|_Boozer) / |B|_VMEC < eps; Boozer transform preserves iota
 - Stage 3 (`NEO`): epsilon_eff is non-negative, bounded
-- Stage 3 (`SFINCS`): transport matrix has expected symmetry properties; full flux mode produces physically reasonable fluxes
+- Stage 3 (`DKX`) produces finite flux profiles in the expected units. Its output passes `validate_dkx_flux` before the handoff to NEOPAX.
 - Stage 4: growth rates are real-valued, fluxes are non-negative in steady state
 - Stage 5: profiles satisfy conservation (total particle/energy content)
 
@@ -238,9 +238,9 @@ Place tests in `tests/stage{N}-{name}/`.
 **Regression tests.** Save known-good output files from a reference case. Write tests that compare new outputs against these baselines using explicit tolerances: `np.testing.assert_allclose(actual, expected, rtol=1e-6)`.
 
 **Integration tests.** Verify that the stage's output is valid input for its downstream consumers. For example:
-- Stage 1: verify `wout_*.nc` can be read by `booz_xform_jax` (Stage 2), `sfincs_jax` (Stage 3), and `GKX` (Stage 4)
+- Stage 1: verify `wout_*.nc` can be read by `booz_xform_jax` (Stage 2), `DKX` (Stage 3), and `GKX` (Stage 4)
 - Stage 2: verify `boozmn_*.nc` can be read by `NEO_JAX` (Stage 3)
-- Stage 3: verify `sfincs_jax_flux_profiles.h5` (from `sfincs_jax`) can be read by `NEOPAX` (Stage 5)
+- Stage 3: verify `dkx_flux_profiles.h5` (from `DKX`) can be read by `NEOPAX` (Stage 5)
 - Stage 4: verify flux CSV output can be consumed by `NEOPAX` (Stage 5)
 - Stage 5: verify end-to-end output (`profiles.h5`: n(r), T(r), E_r(r), P_fus, Q) is produced correctly
 - Stage 5 → Stage 1: verify updated profiles from Stage 5 can be fed back as input to Stage 1 to close the optimization loop
@@ -266,10 +266,10 @@ When a stage completes Phase 2 (containerized, tested, and producing valid outpu
 > Define the process for adding a stage to the Snakemake DAG.
 
 **Design points to keep in mind:**
-- The forward-pass Stage 3 (`sfincs_jax`) reads only the Stage 1 wout, so it runs in parallel with Stage 2; Stage 4 (`GKX`) also needs the Stage 2 boozmn, so it follows Stage 2.
-- `NEO_JAX` reads the Stage 2 boozmn and runs alongside `sfincs_jax` as a screening diagnostic, but it has **no Snakemake rule** and is not part of the forward pass. Its epsilon_eff is a screening metric only. It should not be wired as a dependency for Stage 5.
+- Stages 3 (`DKX`) and 4 (`GKX`) run in parallel after Stage 2. DKX solves using the Stage 1 wout. Its scan also reads the Stage 2 boozmn to reconstruct analytical profiles on NEOPAX's minor radius.
+- `NEO_JAX` reads the Stage 2 boozmn and runs alongside `DKX` as a screening diagnostic, but it has **no Snakemake rule** and is not part of the forward pass. Its epsilon_eff is a screening metric only. It should not be wired as a dependency for Stage 5.
 - Stages 3 and 4 each fan out one Snakemake job per flux surface via a three-rule `prepare` (checkpoint) / `run_one` / `collect` layout; see [Per-surface fan-out](mvp-pipeline.md#per-surface-fan-out-stages-3-and-4).
-- On GPU hosts every job is pinned to one device from a user-supplied pool (or every host GPU via `gpu_ids: "all"`), so no pipeline container reaches a device outside it; see [Multi-GPU scheduling](mvp-pipeline.md#multi-gpu-scheduling).
+- GPU solver jobs use one device each. Preparation, collection, and post-processing run on CPU. See [Multi-GPU scheduling](mvp-pipeline.md#multi-gpu-scheduling).
 
 ### Config-Driven Selection
 

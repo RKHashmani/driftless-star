@@ -21,7 +21,7 @@ ntheta = 64
 nperiod = 1
 
 [time]
-t_max = 500.0
+t_max = 1000.0
 dt = 0.1
 method = "rk3"
 use_diffrax = false
@@ -32,8 +32,8 @@ cfl = 0.8
 
 [geometry]
 model = "vmec"
-vmec_file = "../../stage1-equilibrium/output/wout_w7x_t3d_reconstruction.nc"
-geometry_file = "../output/wout_w7x_t3d_reconstruction.eik.nc"
+vmec_file = "../../../outputs/w7-x/mhd_off_neoclassical_off/stage1_equilibrium/wout_w7x_t3d_reconstruction.nc"
+geometry_file = "../../../outputs/w7-x/mhd_off_neoclassical_off/stage4_turbulence/wout_w7x_t3d_reconstruction.eik.nc"
 torflux = 0.64
 alpha = 0.0
 npol = 1.0
@@ -49,6 +49,8 @@ linear = false
 nonlinear = true
 electrostatic = true
 electromagnetic = false
+use_apar = false
+use_bpar = false
 adiabatic_electrons = true
 adiabatic_ions = false
 tau_e = 1.0

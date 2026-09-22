@@ -8,16 +8,19 @@ Stage 1 solves the three-dimensional ideal-MHD equilibrium problem, producing th
 
 **Position in pipeline:** This stage has no upstream dependencies. Its output (`wout_*.nc`) is consumed by Stage 2 (Boozer Transform) and also directly by some turbulence and transport codes.
 
-Reference: `stellarator_workflow/stellarator_workflow.tex`, Section 4.1 (`VMEC++` and `vmec_jax`) and Section 4.2 (`DESC`).
+The reference manuscript `stellarator_workflow/stellarator_workflow.tex` describes `VMEC++` and the historical `vmec_jax` implementation in Section 4.1, and `DESC` in Section 4.2. The current Stage 1 implementation is VMEX.
 
 ---
 
 ## Codes
 
-### vmec_jax (Primary JAX)
-- **Repository:** https://github.com/uwplasma/vmec_jax
+### VMEX (Primary JAX)
+
+- **Repository:** https://github.com/uwplasma/vmex
 - **Language:** Python/JAX
-- **Role:** JAX-native implementation providing differentiable equilibrium solving with wout-compatible output
+- **Role:** Equilibrium solving with VMEC-compatible `wout` output
+
+Stage 1 installs [VMEX](https://github.com/uwplasma/vmex) from the commit pinned in [`stages/pixi.toml`](../../stages/pixi.toml).
 
 ### VMEC++ (C++ Alternative)
 - **Repository:** https://github.com/proximafusion/vmecpp
@@ -32,10 +35,10 @@ Reference: `stellarator_workflow/stellarator_workflow.tex`, Section 4.1 (`VMEC++
 
 ### Installation & Platform
 
-**`vmec_jax`:** Install via the Pixi environment. From the `stages`/ directory:
+Install VMEX through the Pixi environment from the `stages/` directory.
 
 ```
-pixi install --environment stage-1-vmec
+pixi install --environment stage-1-vmex
 ```
 
 **`desc-opt`:** Install via the Pixi environment. From the `stages`/ directory:
@@ -79,9 +82,9 @@ Reference: `stellarator_io_reference.tex`, Section 3.1.
 | `FTOL` / `FTOL_ARRAY`   | float / array | Convergence tolerances                                      |
 
 ### Input Formats
-- **INDATA files:** Fortran-style text `input.NAME` format (`vmec_jax` and `VMEC++`)
+- **INDATA files:** Fortran-style text `input.NAME` format (`vmex` and `VMEC++`)
 - **JSON:** Programmatic input (`VMEC++` only)
-- **Python objects:** In-memory API (both `VMEC++` and `vmec_jax`)
+- **Python objects:** In-memory API (both `VMEC++` and `vmex`)
 - **Hot restart:** Previous converged output state as initial guess
 
 ### Input Validation
@@ -145,7 +148,7 @@ Reference: `stellarator_io_reference.tex`, Section 3.1.
 | `currumnc` | 2D array (ns x mnmax) | J_theta cosine coefficients |
 | `currvmnc` | 2D array (ns x mnmax) | J_zeta cosine coefficients |
 
-#### Python API Objects (`vmec_jax` / `VMEC++`)
+#### Python API Objects (`vmex` / `VMEC++`)
 
 | Object | Description |
 |--------|-------------|
@@ -202,23 +205,32 @@ Reference: `stellarator_workflow.tex`, Sections 4.1-4.2.
 ## Convergence & Validity
 
 > [!TODO]
-> Document convergence behavior, known failure modes, and recommended tolerances.
+> Document convergence behavior, known failure modes, and recommended production tolerances for this revision.
 
 ---
 
 ## API Documentation
 
-> [!TODO]
-> Document key entry points, configuration parameters, and usage examples.
+From the repository root, use `stages/stage1-equilibrium/run_vmex.py` with required `--input` and `--output` paths and optional `--device`, which defaults to `auto` and is forwarded unchanged to VMEX. Snakemake explicitly selects `cpu` or `gpu` because VMEX's `auto` mode can select CPU for small resolutions even in a GPU image.
+
+A solve that does not converge exits nonzero and fails the stage. Failed WOUT files are discarded, and the solver log remains available for diagnosis.
+
+```sh
+pixi run --manifest-path stages/pixi.toml -e stage-1-vmex python \
+  stages/stage1-equilibrium/run_vmex.py \
+  --input "inputs/quick_run/vmec_input.HSX_vacuum_ns201_quickrun" \
+  --output "outputs/custom/stage1_equilibrium/wout_custom.nc" \
+  --device cpu
+```
 
 ---
 
 ## Scripts & Workflows
 
-**`vmec_jax` (via Pixi):** From the `stages`/ directory:
+Run the VMEX task from the `stages/` directory.
 
 ```
-pixi run stage-1-vmec
+pixi run stage-1-vmex
 ```
 
 **Input:** `inputs/quick_run/vmec_input.HSX_vacuum_ns201_quickrun`
@@ -242,14 +254,14 @@ See `docs/mvp-pipeline.md` for full I/O details.
 
 ## Container Specification (Phase 2)
 
-**`vmec_jax`:** Built from the single templated `stages/Dockerfile` using a build process morally equivalent to:
+VMEX images use the shared `stages/Dockerfile`. Run these commands from the repository root.
 
 ```
-docker build --file stages/Dockerfile --build-arg ENVIRONMENT=stage-1-vmec --platform linux/amd64 --tag ghcr.io/driftless-star/driftless-star:stage-1-vmec-cpu stages/  # CPU
-docker build --file stages/Dockerfile --build-arg CUDA_VERSION=12 --build-arg ENVIRONMENT=stage-1-vmec-gpu --platform linux/amd64 --tag ghcr.io/driftless-star/driftless-star:stage-1-vmec-gpu stages/  # GPU
+docker build --file stages/Dockerfile --build-arg ENVIRONMENT=stage-1-vmex --platform linux/amd64 --tag ghcr.io/driftless-star/driftless-star:stage-1-vmex-cpu stages/  # CPU
+docker build --file stages/Dockerfile --build-arg CUDA_VERSION=12 --build-arg ENVIRONMENT=stage-1-vmex-gpu --platform linux/amd64 --tag ghcr.io/driftless-star/driftless-star:stage-1-vmex-gpu stages/  # GPU
 ```
 
-Published to GHCR as `ghcr.io/driftless-star/driftless-star:stage-1-vmec-cpu` and `stage-1-vmec-gpu`. CI builds via `.github/workflows/containers.yml`.
+CI builds and publishes the `ghcr.io/driftless-star/driftless-star:stage-1-vmex-cpu` and `stage-1-vmex-gpu` tags through `.github/workflows/containers.yml`. Apptainer tags add the `apptainer-` prefix.
 
 See [guide](../guide.md#container-architecture) for full architecture details.
 

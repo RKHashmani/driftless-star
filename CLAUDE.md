@@ -17,23 +17,23 @@ driftless-star is a **recipe repo**: it contains environment definitions, contai
 
 | Stage | Name | Primary Code | Alternatives | Spec |
 |-------|------|-------------|--------------|------|
-| 1 | Equilibrium | `vmec_jax`, `DESC` | `VMEC++` | `docs/stage1-equilibrium/spec.md` |
+| 1 | Equilibrium | `vmex`, `DESC` | `VMEC++` | `docs/stage1-equilibrium/spec.md` |
 | 2 | Boozer Transform | `booz_xform_jax` | `BOOZ_XFORM` | `docs/stage2-boozer/spec.md` |
-| 3 | Neoclassical | `NEO_JAX`, `sfincs_jax` | `NEO`, `SFINCS` | `docs/stage3-neoclassical/spec.md` |
+| 3 | Neoclassical | `NEO_JAX`, `DKX` | `NEO`, `SFINCS` | `docs/stage3-neoclassical/spec.md` |
 | 4 | Turbulence | `GKX` | `GX`, `GENE` | `docs/stage4-turbulence/spec.md` |
 | 5 | Transport | `NEOPAX` | `Trinity3D` | `docs/stage5-transport/spec.md` |
 
-Forward-pass chain: `vmec_jax` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `NEOPAX`
+The forward pass follows `vmex` -> `booz_xform_jax` -> `{DKX, GKX}` -> `NEOPAX`.
 
 **Key notes:**
-- `NEO_JAX` is **not** in the forward-pass chain: it computes epsilon_eff as a screening/optimization diagnostic, runs in parallel with `sfincs_jax`, and is not consumed by Stage 5.
+- `NEO_JAX` is **not** in the forward-pass chain: it computes epsilon_eff as a screening/optimization diagnostic, runs in parallel with `DKX`, and is not consumed by Stage 5.
 - Stages 3 and 4 run in parallel after Stage 2.
 
 ### Naming Conventions
 
 - Stage directories: `stage{N}-{name}` (e.g., `stage1-equilibrium`)
 - Run inputs and outputs (top-level): each run is a folder under `inputs/` holding its `config.yaml` and stage inputs; the committed `inputs/quick_run/` baseline is tracked so a fresh clone is immediately runnable. Generated artifacts land under `outputs/<run>/stageN_<name>/` (e.g. `outputs/quick_run/stage1_equilibrium/`). `outputs/` and ad-hoc `inputs/<run>/` folders are gitignored (only `inputs/quick_run/` is tracked).
-- Container images: `ghcr.io/driftless-star/driftless-star:stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmec-cpu`) (on GHCR)
+- Container images: `ghcr.io/driftless-star/driftless-star:stage-{N}-{code}-cpu` / `stage-{N}-{code}-gpu` (e.g., `stage-1-vmex-cpu`) (on GHCR)
 - W&B projects: `driftless-star-stage{N}-{name}`
 - Test files: mirror the source structure in a top-level `tests/`
 
@@ -41,14 +41,14 @@ Forward-pass chain: `vmec_jax` -> `booz_xform_jax` -> `sfincs_jax` -> `GKX` -> `
 
 Currently, most inter-stage communication is **file-based** using standard physics file formats:
 - **NetCDF** (`.nc`): equilibrium (`wout_*.nc`), Boozer (`boozmn_*.nc`), turbulence outputs
-- **HDF5** (`.h5`): neoclassical outputs (`sfincs_jax_flux_profiles.h5`), `NEOPAX` profiles
+- **HDF5** (`.h5`): neoclassical outputs (`dkx_flux_profiles.h5`), `NEOPAX` profiles
 
 Snakemake rules define which files connect which stages. Each stage's `spec.md` is the authoritative source for required/optional fields in its output files. Where alternative implementations use different file formats or field names, a wrapper or adapter layer will be needed to translate between them.
 
 **Key points from the TeX manuscripts:**
 
 1. **Screening-only outputs vs. transport state variables.** `NEO_JAX`'s epsilon_eff is central to ranking candidate geometries but is NOT advanced by a transport solver. It should not be wired as a transport input.
-2. **Dual-role outputs.** Heat/particle flux from `GKX` and neoclassical flux from `SFINCS` are simultaneously optimization objectives (to minimize) AND direct numerical inputs for transport profile evolution.
+2. **Dual-role outputs.** Heat/particle flux from `GKX` and neoclassical flux from `DKX` are simultaneously optimization objectives (to minimize) AND direct numerical inputs for transport profile evolution.
 3. **Turbulence coupling.** `NEOPAX` has turbulence-coupling utilities, but the `GKX` -> `NEOPAX` path (Stage 4 -> Stage 5) is not yet the default.
 
 ### Working with This Codebase
