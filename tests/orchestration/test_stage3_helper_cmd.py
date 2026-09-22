@@ -58,7 +58,6 @@ _PREPARE_OPTIONALS: list[tuple[str, str, object]] = [
 
 _FULL_CFG: dict = {key: value for key, _, value in _PREPARE_OPTIONALS} | {
     "gpu_ids": "0,1",
-    "plot": False,
     "verbose_workers": True,
     "max_parallel": 8,
 }
@@ -158,15 +157,6 @@ def test_prepare_verbose_workers_tristate() -> None:
     assert "--verbose-workers" not in absent and "--no-verbose-workers" not in absent
 
 
-# Plotting happens in the reduction step, so the plot toggle lives on `collect` and is tri-state: True emits --plot,
-# False emits --no-plot, absent emits neither. Token membership so --plot is not falsely found inside --no-plot.
-def test_collect_plot_tristate() -> None:
-    assert "--plot" in compose(collect_cmd, stage_cfg={"plot": True}).split()
-    assert "--no-plot" in compose(collect_cmd, stage_cfg={"plot": False}).split()
-    absent = compose(collect_cmd, stage_cfg={}).split()
-    assert "--plot" not in absent and "--no-plot" not in absent
-
-
 # Device assignment lives in the docker run prefix, so the worker command itself carries no GPU flag in either mode
 # and the worker pins the one device its container exposes. The worker phase reads no stage config at all, so a
 # retired gpu_ids key left in a config file has no path to this command.
@@ -202,8 +192,8 @@ def test_run_one_flags_parse_and_dispatch_to_cmd_run_one() -> None:
     assert args.gpu_ids == "0"
 
 
-# A drift guard for the reduction phase. The flat (no-subcommand) parser defines its own --output-dir and --plot
-# defaults; this asserts the collect subparser's parsed values win, so the composed --output-dir and --no-plot reach
+# A drift guard for the reduction phase. The flat (no-subcommand) parser defines its own --output-dir
+# default; this asserts the collect subparser's parsed value wins, so the composed --output-dir reaches
 # cmd_collect instead of being shadowed by flat-parser defaults.
 def test_collect_flags_parse_and_dispatch_to_cmd_collect() -> None:
     output_dir = "outputs/custom run/stage3"
@@ -214,7 +204,6 @@ def test_collect_flags_parse_and_dispatch_to_cmd_collect() -> None:
     assert args.func.__name__ == "cmd_collect"
     assert args.output_dir == output_dir
     assert args.output == output_file
-    assert args.plot is False
     assert args.command == "collect"
 
 

@@ -261,10 +261,10 @@ def main() -> None:
     )
     parser.add_argument("--config", type=Path, default=Path("inputs/quick_run/config.yaml"),
                         help="Pipeline run config (default: inputs/quick_run/config.yaml).")
-    parser.add_argument("--max-iters", type=int, default=3,
-                        help="Cap on loop iterations; the convergence signal can stop the loop earlier (default: 3).")
-    parser.add_argument("--cores", type=int, default=4,
-                        help="Cores passed to 'snakemake --cores' (default: 4).")
+    parser.add_argument("--max-iters", type=int, default=20,
+                        help="Cap on loop iterations; the convergence signal can stop the loop earlier (default: 20).")
+    parser.add_argument("--cores", type=int, default=8,
+                        help="Cores passed to 'snakemake --cores' (default: 8).")
     parser.add_argument("--gpu-ids", type=str, default=None,
                         help="Override the config's gpu_ids for every iteration (null, all, or a comma-separated "
                              "id list).")

@@ -44,8 +44,6 @@
 
 - [ ] A run whose transport window completes in one NEOPAX call stops the loop at iteration 1 with `horizon`. That is the correct reading of `[transport_solver].t_final` as an absolute end time, but such a config exercises none of the feedback path beyond the first pass. `inputs/quick_run` is such a config. Its archived solutions reach `t_final = 1.4e-6` in one call, so the documented `pixi run driftless-star --max-iters 3` example is a one-iteration run. Accepted for now, because the quick run is a smoke config. To exercise the feedback path again, the config must stop each call short of `t_final`, for example with a `stop_after_accepted_steps` cap as the W7-X validation uses. A larger `t_final` does not help, because one call covers it regardless. The W7-X validation is unaffected; it covers about one percent of its `t_final` per call.
 
-- [ ] The flux-versus-gradient scatter panels will not plot the gradient GKX was actually given. `inverse_gradient_scale_length` in `stages/stage5-post-processing/plot_transport_panels.py`, which arrives with the W7-X validation branch and is not in this tree, returns `-np.gradient(profile, rho) / profile` against the solution's cell-centered `rho`. That is a third convention. Stages 3 and 4 now take NEOPAX's own face gradients, built from the cell centers under the run's `[boundary]` blocks and evaluated on the faces, while this differences the centers themselves with `numpy.gradient` at its default `edge_order=1`, making both ends one-sided and first-order. The `q` and `gamma` panels would therefore scatter a Stage 4 flux against an `a/L_X` that is not the `tprim`/`fprim` that drove it, and the discrepancy is largest exactly at the edge, where the panels are read. The fix is to read `density_grad_faces` / `temperature_grad_faces` and pair them with `rho_face`, as the other consumers now do.
-
 ## W&B / Output Tracking
 
 - [ ] Decide whether W&B dashboards are internal (maintainers only) or public-facing.
@@ -56,3 +54,4 @@
 - [ ] Container registry for external collaborators: where do external contributors host their alternative stage implementations? Maybe their own GHCR or Docker Hub, with the workflow engine pulling from there.
 - [ ] How to expose the workflow engine to external users.
 - [ ] How to validate that externally submitted containers are not a security threat.
+- [ ] A Snakemake profile with `rerun-triggers: mtime`, opted into by exporting `SNAKEMAKE_PROFILE` around a resume command, for restarting a long run against an existing output tree. Snakemake's default rerun triggers count any change to a rule's rendered shell command as staleness, which requeues completed Stage 4 GPU work.

@@ -4,6 +4,9 @@ NEOPAX is configured via a TOML file rather than CLI flags. :func:`prepare_neopa
 writes a path-resolved copy of the shared ``common_input`` template under the run's output
 directory (leaving the committed template untouched); the Snakefile then runs NEOPAX on that
 copy. Called at Snakefile parse time.
+
+It also validates prescribed ``[profiles]`` blocks, which the closed-loop driver generates into
+the template from iteration 2 onward and which re-pass Snakefile parse on every iteration.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ import json
 import tomllib
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 from .utils import apply_assignments
 
@@ -49,6 +53,88 @@ def resolve_pressure_convergence_method(config: dict) -> str:
             f"config['convergence']['method'] must be one of {choices}, got {method!r}."
         )
     return method
+
+
+def _validate_neopax_profiles(cfg: dict[str, Any], template: str) -> None:
+    """Validate a prescribed ``[profiles]`` section for the closed-loop pipeline.
+
+    Parameters
+    ----------
+    cfg : dict
+        Parsed ``common_input`` template.
+    template : str
+        Template path, quoted in error messages.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the model is ``given``, if ``[geometry].n_radial`` is below 2, or if a required state
+        array is missing, non-numeric, or of the wrong species or radial dimensions.
+    """
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict):
+        return
+    model = str(profiles.get("model", profiles.get("profiles_model", "standard_analytical"))).strip().lower()
+    if model == "given":
+        raise ValueError(
+            f"{template}: [profiles].model is 'given'. Use 'prescribed', the only spelling the Stage 3 "
+            "and Stage 4 prescribed-profiles reader accepts."
+        )
+    if model != "prescribed":
+        return
+
+    species = cfg.get("species")
+    names = species.get("names") if isinstance(species, dict) else None
+    if not isinstance(names, list) or not names:
+        raise ValueError(f"{template}: prescribed profiles require a nonempty [species].names array.")
+    n_species = len(names)
+
+    geometry = cfg.get("geometry")
+    n_radial = geometry.get("n_radial") if isinstance(geometry, dict) else None
+    if not isinstance(n_radial, int) or isinstance(n_radial, bool) or n_radial < 2:
+        raise ValueError(
+            f"{template}: prescribed profiles require [geometry].n_radial to be an integer of at least 2."
+        )
+
+    arrays = (
+        ("density", 2, n_radial, "[geometry].n_radial"),
+        ("temperature", 2, n_radial, "[geometry].n_radial"),
+        ("Er", 1, n_radial, "[geometry].n_radial"),
+        ("density_face", 2, n_radial + 1, "[geometry].n_radial + 1"),
+        ("temperature_face", 2, n_radial + 1, "[geometry].n_radial + 1"),
+        ("Er_face", 1, n_radial + 1, "[geometry].n_radial + 1"),
+        ("density_grad_face", 2, n_radial + 1, "[geometry].n_radial + 1"),
+        ("temperature_grad_face", 2, n_radial + 1, "[geometry].n_radial + 1"),
+    )
+    for key, ndim, radial_size, radial_source in arrays:
+        value = profiles.get(key)
+        if value is None:
+            raise ValueError(f"{template}: [profiles].model is {model!r} but [profiles].{key} is missing.")
+        is_table = isinstance(value, list) and all(
+            isinstance(row, list)
+            and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in row)
+            for row in value
+        )
+        is_vector = isinstance(value, list) and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool) for item in value
+        )
+        if (ndim == 2 and not is_table) or (ndim == 1 and not is_vector):
+            raise ValueError(f"{template}: [profiles].{key} must be a {ndim}-D array of numbers.")
+        rows = value if ndim == 2 else [value]
+        if ndim == 2 and len(value) != n_species:
+            raise ValueError(
+                f"{template}: [profiles].{key} holds {len(value)} species rows, expected {n_species} "
+                "to match [species].names."
+            )
+        if any(len(row) != radial_size for row in rows):
+            raise ValueError(
+                f"{template}: [profiles].{key} rows must hold {radial_size} points to match "
+                f"{radial_source}."
+            )
 
 
 def read_rho_edge(s5_config_template: str) -> float:
@@ -158,7 +244,9 @@ def prepare_neopax_config(
     ------
     ValueError
         If the template is invalid or the line editor cannot make exactly the
-        intended path changes. An existing resolved file is left untouched.
+        intended path changes. Also if [profiles].model is ``given``, or if prescribed profiles do
+        not contain the center and face state required by Stages 3-5. An existing resolved file is
+        left untouched.
     """
     resolved = Path(s5_resolved_config)
     base = resolved.parent.resolve()
@@ -175,5 +263,6 @@ def prepare_neopax_config(
     }
     template_text = Path(s5_config_template).read_bytes().decode("utf-8")
     resolved_text = _rewrite_neopax_paths(template_text, s5_config_template, paths)
+    _validate_neopax_profiles(tomllib.loads(template_text), s5_config_template)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_bytes(resolved_text.encode("utf-8"))

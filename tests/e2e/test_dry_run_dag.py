@@ -22,14 +22,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
-import pytest
 
 from src.ouroboros import _write_loop_overrides
 from src.utils import RESOLVED_COMMON_CONFIG, resolve_pipeline_paths
+from tests.helpers.runs import W7X_RUNS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FORWARD_RULES = (
@@ -52,8 +53,9 @@ def _dry_run(
     config_overrides: list[str],
     extra_configfiles: list[str] | None = None,
     printshellcmds: bool = False,
+    configfile: str = "inputs/quick_run/config.yaml",
 ) -> subprocess.CompletedProcess:
-    """Plan the quick_run DAG with ``snakemake -n``, redirecting every write under ``tmp_path``.
+    """Plan a run with ``snakemake -n`` and redirect writes to ``tmp_path``.
 
     ``extra_configfiles`` are appended after the base config file under the same single
     ``--configfile`` flag, exactly as the loop driver passes its overrides file, and
@@ -61,7 +63,7 @@ def _dry_run(
     """
     return subprocess.run(
         ["snakemake", "-n", *(["-p"] if printshellcmds else []), *targets,
-         "--configfile", "inputs/quick_run/config.yaml", *(extra_configfiles or []),
+         "--configfile", configfile, *(extra_configfiles or []),
          "--workflow-profile", "none",
          "--runtime-source-cache-path", f"{tmp_path}/srccache",
          "--config", f"output_dir={tmp_path}/out", *config_overrides],
@@ -111,6 +113,30 @@ def test_forward_pass_dag_dry_run(tmp_path: Path, custom_output: bool) -> None:
     for rule in DEFERRED_RULES:
         assert rule not in output, f"per-surface rule {rule} planned before its checkpoint ran:\n{output}"
     assert "checkpoint jobs" in output, output
+
+
+@pytest.mark.parametrize(("run", "stage3_enabled"), [(run, run.endswith("neoclassical_on")) for run in W7X_RUNS])
+def test_w7x_forward_pass_dag_dry_run(tmp_path: Path, run: str, stage3_enabled: bool) -> None:
+    """W7-X runs schedule DKX only when neoclassical transport is enabled."""
+    result = _dry_run(tmp_path, targets=[], config_overrides=[], configfile=f"inputs/{run}/config.yaml",
+                      printshellcmds=True)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    for rule in FORWARD_RULES:
+        expected = stage3_enabled or not rule.startswith("stage3_")
+        assert (rule in output) == expected, f"rule {rule} scheduling mismatch:\n{output}"
+    resolved = tomllib.loads((tmp_path / "out/stage5_transport" / RESOLVED_COMMON_CONFIG).read_text())
+    if stage3_enabled:
+        assert "stage-3-dkx-gpu" in output, output
+        assert resolved["neoclassical"]["flux_model"] == "dkx_fluxes_r_file"
+        assert resolved["neoclassical"]["neoclassical_file"] == "../stage3_neoclassical/dkx_flux_profiles.h5"
+    else:
+        assert "Stage 3 is skipped" in output, output
+        assert "dkx_radial_scan.py" not in output, output
+        assert "stage3_neoclassical" not in output, output
+        assert not (tmp_path / "out/stage3_neoclassical").exists()
+        assert resolved["neoclassical"]["flux_model"] == "none"
+        assert resolved["neoclassical"].get("neoclassical_file", "") == ""
 
 
 # When you explicitly ask Snakemake to build the convergence-signal file (the loop-closing target), the post-processing
@@ -241,16 +267,19 @@ def test_perturbed_surface_target_matches_run_one(tmp_path: Path) -> None:
 
 # With a real manifest on disk and its upstream equilibrium and Boozer outputs already present, the stage4_prepare
 # checkpoint is up to date, so a dry run expands its gather and schedules one stage4_run_one per manifest entry,
-# including the perturbed sibling. Write the dummy outputs after the committed inputs and before the manifest,
-# so each dependency is up to date even when the input files were recently edited.
-# Only the manifest basenames matter, so container-absolute run_dir paths work.
+# including the perturbed sibling. Every committed file the DAG consumes lives under inputs/quick_run/ and carries its
+# checkout mtime, so the dummy upstream outputs and the manifest are stamped strictly newer than all of them, in DAG
+# order, keeping every rule up to date however recently the repo was cloned. Only the manifest basenames matter, so
+# container-absolute run_dir paths work.
 def test_perturbed_manifest_expands_fan_out(tmp_path: Path) -> None:
     config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
     paths = resolve_pipeline_paths(config, output_dir=f"{tmp_path}/out")
+    newest_input = max(p.stat().st_mtime for p in (REPO_ROOT / paths["input_dir"]).rglob("*") if p.is_file())
     for key in ("s1_output", "s2_output"):
         artifact = Path(paths[key])
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("")
+        os.utime(artifact, (newest_input + 100, newest_input + 100))
     manifest = Path(paths["stage4_manifest"])
     manifest.parent.mkdir(parents=True, exist_ok=True)
     for surface in ("rho_001_r0p2500", "rho_001_r0p2500_fd_n_D"):
@@ -267,6 +296,7 @@ def test_perturbed_manifest_expands_fan_out(tmp_path: Path) -> None:
             }
         )
     )
+    os.utime(manifest, (newest_input + 200, newest_input + 200))
     result = _dry_run(tmp_path, targets=[paths["s4_output"]], config_overrides=[])
     output = result.stdout + result.stderr
     assert result.returncode == 0, output

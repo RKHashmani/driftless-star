@@ -116,7 +116,7 @@ Snakemake DAG, end-to-end tests, and publishing. Details in the [Guide](docs/gui
 
 ## Usage
 
-A *run* is a folder under `inputs/` holding its run config (`config.yaml`) and the inputs required by enabled stages. A fresh clone ships one ready-to-run example, `inputs/quick_run/`. `common_input.toml` in the run folder is the shared transport config read by Stages 3, 4, and 5. Stage 3 and Stage 4 can be [skipped automatically through their shared flux selectors](docs/mvp-pipeline.md#automatic-producer-skipping).
+A *run* is a folder under `inputs/` that holds its run config (`config.yaml`) and the inputs required by enabled stages. `inputs/quick_run/` is the reduced-accuracy example. The five [W7-X comparison cases](inputs/w7-x/) live under `inputs/w7-x/` and include every required stage input. Their `t3d_benchmark` case also includes a supplied equilibrium that must be [copied into the output tree](inputs/w7-x/t3d_benchmark/README.md) before launch. `common_input.toml` in each run folder is the shared transport config read by Stages 3, 4, and 5. Stage 3 and Stage 4 can be [skipped automatically through their shared flux selectors](docs/mvp-pipeline.md#automatic-producer-skipping).
 
 `driftless-star` iterates toward transport-consistent profiles by chaining forward passes. Each pass's Stage 5 transport solution feeds the next one three ways: as a boundary refit from the evolved pressure, as kinetic profiles prescribed to Stages 3, 4, and 5, and as the advanced transport clock.
 
@@ -124,7 +124,7 @@ A *run* is a folder under `inputs/` holding its run config (`config.yaml`) and t
 pixi run driftless-star --config inputs/quick_run/config.yaml --max-iters 3 --cores 4
 ```
 
-Each iteration is a full pipeline run under its own `outputs/<run>/loop/iter_N/` tree (`outputs/` is gitignored), and the driver stops early once the pressure profile settles under the config's `convergence.method` (`rms` or `pointwise`) and `convergence.pressure_rel_tol`. Stages listed under `loop.rerun` as `false` are frozen, so iterations after the first reuse their iteration 1 artifacts. See [docs/mvp-pipeline.md](docs/mvp-pipeline.md#closing-the-loop).
+Each iteration is a full pipeline run under its own `outputs/<run>/loop/iter_N/` tree (`outputs/` is gitignored). Stage 5 writes `output/stage5_post_processing/converge_status.json`, and the driver stops early once the pressure profile settles under the config's `convergence.method` (`rms` or `pointwise`) and `convergence.pressure_rel_tol`. It starts another iteration only for `continue`, stops for `converged`, `horizon`, or `halted`, and also stops at `--max-iters`. Stages listed under `loop.rerun` as `false` are frozen, so iterations after the first reuse their iteration 1 artifacts. See [docs/mvp-pipeline.md](docs/mvp-pipeline.md#closing-the-loop).
 
 ### Run a single forward pass
 
@@ -164,6 +164,29 @@ pixi run driftless-star --config inputs/quick_run/config.yaml --cores 8 --gpu-id
 ```
 
 GPU mode needs an NVIDIA host with `nvidia-container-toolkit` configured on the docker daemon. See [docs/mvp-pipeline.md](docs/mvp-pipeline.md#multi-gpu-scheduling) for how the pinning works, how to share a host with other users, and the current limitations.
+
+### Recreate the Trinity3D + GX validation
+
+The W7-X comparison configurations use `stage3.dkx` and write `dkx_flux_profiles.h5` when neoclassical transport is enabled. Cases with neoclassical transport off, including the benchmark, skip Stage 3 entirely. To resume an older run whose enabled Stage 3 artifact is named `sfincs_jax_flux_profiles.h5`, set `filenames.s3_output` to that existing filename in the run config.
+
+`inputs/w7-x/t3d_benchmark/` provides the Driftless Star benchmark compared with the separate Trinity3D + GX reference. Frozen 6.7 keV electrons heat the evolving 1 keV ions through collisional exchange while ITG turbulence limits the resulting gradient. The transport grid has eight cells bounded by nine faces out to rho = 0.7. Stage 3 is skipped. Stage 4 omits the magnetic axis and scans the eight non-axis faces. Iteration 1 uses the analytical `[profiles]` parameters. Later iterations prescribe profiles from the previous transport solution while keeping the supplied equilibrium fixed.
+
+Before launching, follow the [supplied-equilibrium setup](inputs/w7-x/t3d_benchmark/README.md) so Stage 1 uses the included NetCDF file. Make the workflow's GPU images available and adjust `gpu_ids` and `jobs_per_gpu` for your host. Then run the loop.
+
+```
+pixi run driftless-star --config inputs/w7-x/t3d_benchmark/config.yaml --max-iters 400 --cores 8
+```
+
+Each iteration lands under `outputs/w7-x/t3d_benchmark/loop/iter_N/`. Its status signal is `output/stage5_post_processing/converge_status.json`. The last completed iteration's `output/stage5_transport/transport_solution.h5` contains the ion temperature profile for comparison with Trinity3D's `test-w7x-gx` case at the same transport time.
+
+The four other [W7-X comparison cases](inputs/w7-x/) use matched initial pressure on the full radial domain and vary equilibrium feedback and neoclassical transport.
+
+Once all five cases have run, `stages/stage5-post-processing/plot_w7x_figures.py` draws the five comparison figures into `outputs/w7-x/plots/`. It needs the stage-5 environment, because the collisional-heating figure evaluates the saved source models through NEOPAX. Run it from the repository root inside the stage-5 image. Add `--t3d-nc <path>` to overlay the Trinity3D + GX reference when you have that NetCDF file; without it the figures show the Driftless Star runs alone.
+
+```
+docker run --rm -e HOME=/tmp -v "$PWD:/work" -w /work ghcr.io/driftless-star/driftless-star:stage-5-neopax-cpu \
+    python stages/stage5-post-processing/plot_w7x_figures.py
+```
 
 ### Visualize the pipeline graph
 

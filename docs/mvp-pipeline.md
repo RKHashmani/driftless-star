@@ -34,7 +34,7 @@
 
 ## Stage Test Data
 
-A fresh clone ships one runnable, reduced-accuracy example under `inputs/quick_run/`: every stage input plus the run config, flat in one folder. The scripts that consume them live under `stages/`:
+A fresh clone ships a reduced-accuracy example under `inputs/quick_run/`, holding every stage input plus the run config in one folder. The five [W7-X comparison cases](../inputs/w7-x/) under `inputs/w7-x/` include a benchmark and four cases that vary equilibrium feedback and neoclassical transport. Only the neoclassical-on cases include a Stage 3 namelist. Before running `inputs/w7-x/t3d_benchmark/`, [copy its supplied equilibrium into the Stage 1 output location](../inputs/w7-x/t3d_benchmark/README.md). The scripts that consume these inputs live under `stages/`.
 
 ```
 inputs/quick_run/
@@ -500,8 +500,8 @@ pixi run driftless-star --max-iters 3 --cores 4
 | Flag          | Default       | Meaning                                              |
 | ------------- | ------------- | ---------------------------------------------------- |
 | `--config`    | `inputs/quick_run/config.yaml` | Pipeline run config file.               |
-| `--max-iters` | `3`           | Cap on loop iterations; the signal can stop the loop earlier. |
-| `--cores`     | `4`           | Cores passed to `snakemake --cores`.                 |
+| `--max-iters` | `20`          | Cap on loop iterations; the signal can stop the loop earlier. |
+| `--cores`     | `8`           | Cores passed to `snakemake --cores`.                 |
 | `--gpu-ids`   | the config's `gpu_ids` | Forwarded to every iteration's `snakemake --config` (see [Multi-GPU scheduling](#multi-gpu-scheduling)). |
 | `--jobs-per-gpu` | the config's `jobs_per_gpu` | Forwarded to every iteration's `snakemake --config`. |
 | `--profile`   | none, so iterations run locally | Snakemake profile directory forwarded to every iteration, e.g. `executors/htcondor/profiles/htcondor-gpu` to run on HTCondor. |
