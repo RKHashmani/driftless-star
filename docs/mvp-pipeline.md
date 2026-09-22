@@ -36,6 +36,8 @@
 
 A fresh clone ships a reduced-accuracy example under `inputs/quick_run/`, holding every stage input plus the run config in one folder. The five [W7-X comparison cases](../inputs/w7-x/) under `inputs/w7-x/` include a benchmark and four cases that vary equilibrium feedback and neoclassical transport. Only the neoclassical-on cases include a Stage 3 namelist. Before running `inputs/w7-x/t3d_benchmark/`, [copy its supplied equilibrium into the Stage 1 output location](../inputs/w7-x/t3d_benchmark/README.md). The scripts that consume these inputs live under `stages/`.
 
+The README includes [W7-X run instructions](../README.md#run-the-w7-x-benchmark) and [example results](../README.md#w7-x-results).
+
 ```
 inputs/quick_run/
 ├── config.yaml                              # run config (paths, filenames, scan knobs)
@@ -258,9 +260,12 @@ python -m gkx.cli run --config inputs/quick_run/HSX_vacuum_ns201_quickrun.toml -
 | --------- | -------------------- | ------------------------------------------------------------------------------ |
 | **In**    | NetCDF `wout_*.nc`   | `outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc`           |
 | **In**    | NetCDF `boozmn_*.nc` | `outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc`              |
+| **In**    | TOML config | `inputs/quick_run/common_input.toml`, resolved by Snakemake into `outputs/quick_run/stage5_transport/common_input_updated.toml` |
+| **In**    | HDF5 neoclassical fluxes | `outputs/quick_run/stage3_neoclassical/dkx_flux_profiles.h5`, when Stage 3 is enabled |
+| **In**    | HDF5 turbulent fluxes | `outputs/quick_run/stage4_turbulence/neopax_fluxes.h5`, when Stage 4 is enabled |
 | **Out**   | HDF5 `transport_solution.h5` | `outputs/quick_run/stage5_transport/transport_solution.h5`                     |
 > [!NOTE]
-> The inputs come from Stage 1 and Stage 2.
+> Geometry comes from Stages 1 and 2. Fluxes come from the enabled Stage 3 and Stage 4 producers.
 
 ### How to Install
 
@@ -272,20 +277,17 @@ pixi install --manifest-path stages/pixi.toml --environment stage-5-neopax
 
 Stage 5 is orchestrated by Snakemake (`rule stage5_neopax`), which runs `neopax` on a config assembled from geometry and enabled flux outputs. See the [Workflow Engine -- Snakemake](#workflow-engine----snakemake) section to run the forward pass through Stage 5, and [Closing the Loop](#closing-the-loop) for feeding the transport solution back into the next forward pass.
 
-> [!NOTE]
-> `NEOPAX`, being the final stage, has additional complexities. Ideally the script using `NEOPAX` runs a loop over `DKX` fluxes to optimize for ambipolarity, which is the most computationally expensive step in the pipeline.
-
 ---
 
 ## Workflow Engine -- Snakemake
 
 **Code:** [Snakemake](https://snakemake.readthedocs.io/) 
 
-Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stage 4} -> Stage 5`. Stage 2 follows Stage 1; Stages 3 and 4 both need the Stage 1 wout and the Stage 2 boozmn, so they fan out in parallel after Stage 2; and Stage 5 consumes wout, boozmn, and fluxes from enabled producers. Each stage runs inside its pre-built GHCR container image (`ghcr.io/driftless-star/driftless-star:stage-N-<code>-{cpu,gpu}`) via `docker run`, so no local Pixi install is required beyond the `pipeline` env itself.
+Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stage 4} -> Stage 5`. Stage 2 follows Stage 1; Stages 3 and 4 both need the Stage 1 wout and the Stage 2 boozmn, so they fan out in parallel after Stage 2; and Stage 5 consumes wout, boozmn, and fluxes from enabled producers. Each stage runs inside its pre-built GHCR container image (`ghcr.io/driftless-star/driftless-star:stage-N-<code>-{cpu,gpu}`) via Docker or Apptainer, so no local Pixi install is required beyond the `pipeline` env itself. Apptainer uses native SIF images with the tag prefix `apptainer-stage-`.
 
 | Direction | Format              | Location                                                                                                                                                           |
 | --------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **In**    | YAML config         | `inputs/quick_run/config.yaml` (keys: `run_name`, `gpu_ids`, `jobs_per_gpu`, `docker_user`, `input_dir`, `output_dir`, `filenames`, `convergence`, `loop`, `stage3`, `stage4`)    |
+| **In**    | YAML config         | `inputs/quick_run/config.yaml` (keys: `run_name`, `container_runtime`, `gpu_ids`, `jobs_per_gpu`, `docker_user`, `input_dir`, `output_dir`, `filenames`, `convergence`, `loop`, `stage3`, `stage4`)    |
 | **In**    | Workflow definition | `Snakefile`                                                                                                                                                        |
 | **In**    | Per-stage inputs    | `inputs/quick_run/` (all stage inputs, flat)                                                                                                                       |
 | **Out**   | Stage 2 NetCDF      | `outputs/quick_run/stage2_boozer/boozmn_HSX_vacuum_ns201_quickrun.nc`                                                                                              |
@@ -299,7 +301,7 @@ Automates the MVP forward pass end-to-end: `Stage 1 -> Stage 2 -> {Stage 3, Stag
 > `rule all` targets the Stage 5 transport solution (`transport_solution.h5`); geometry and enabled flux artifacts are produced transitively because downstream rules declare them as `input:`. The loop-closing post-processing step is *not* part of `rule all` -- a plain `snakemake` stays a pure forward pass; see [Closing the Loop](#closing-the-loop).
 
 > [!NOTE]
-> Docker must be running on the host. On macOS / Windows that is Docker Desktop; on Linux, the docker engine or a rootless equivalent (podman aliased to `docker`). Windows users should invoke from WSL2 or Git Bash so bash expansions like `$PWD` resolve correctly inside the Snakefile's shell directives; GPU mode needs WSL2 specifically, since the slot allocator requires a POSIX host (see [Multi-GPU scheduling](#multi-gpu-scheduling)). HPC clusters that disallow Docker are a planned follow-up (Apptainer via `--sdm apptainer`).
+> When using Docker, it must be running on the host. On macOS / Windows that is Docker Desktop; on Linux, the docker engine or a rootless equivalent (podman aliased to `docker`). Windows users should invoke from WSL2 or Git Bash so bash expansions like `$PWD` resolve correctly inside the Snakefile's shell directives; GPU mode needs WSL2 specifically, since the slot allocator requires a POSIX host (see [Multi-GPU scheduling](#multi-gpu-scheduling)). To use Apptainer, set `container_runtime: apptainer` in the run config or pass `--config container_runtime=apptainer` to the forward task. See [Run with Apptainer](../README.md#run-with-apptainer) for local commands and [Running on an HTCondor cluster](../executors/htcondor/README.md) for cluster setup.
 
 ### Automatic producer skipping
 
@@ -326,7 +328,7 @@ Which surfaces are scanned is driven by the `stage3.dkx` / `stage4.gkx` blocks i
 > `prepare` is a Snakemake `checkpoint` because the surface count can be data-dependent: with `profiles_source: transport_h5` the rho grid is read from a `transport_solution.h5` at run time. A dry run (`snakemake -n`) therefore plans only up to the checkpoints plus the deferred `collect` jobs; the per-surface `run_one` layer materializes only after `prepare` actually runs. Surface-level concurrency is `snakemake --cores`, one job per surface.
 
 > [!NOTE]
-> `collect` is fail-fast: it requires every per-surface output, so one failed surface fails the stage. The zero-filling fallback survives only in each scan script's manual all-in-one CLI (running the script without a subcommand), which the Snakemake path does not use.
+> `collect` is fail-fast in the Snakemake workflow. It requires every per-surface output, so one failed surface fails the stage. The GKX scan permits incomplete diagnostic export only with an explicit `--allow-incomplete` option in its manual CLI. Snakemake does not pass that option.
 
 ### How the fan-out executes
 
@@ -387,17 +389,17 @@ Defining another run via its own config file:
 pixi run driftless-star-fwd --configfile inputs/my_run/config.yaml --cores 4
 ```
 
-Each run is self-contained: its `config.yaml` sets `input_dir`/`output_dir` and the input basenames, so there is no shared base file to inherit from. To change a few keys for one invocation without editing the file, append `--config key=value` (it overrides the file), or pass additional `--configfile` files (later files override earlier ones).
+Each run is self-contained: its `config.yaml` sets `input_dir`/`output_dir` and the input basenames, so there is no shared base file to inherit from. To change a few keys for one invocation without editing the file, append `--config key=value` (it overrides the file), or list additional files after a single `--configfile` flag (later files override earlier ones).
 
 > [!NOTE]
 > A run config is required: there is no hardcoded `configfile:` directive, so a bare `snakemake` errors with guidance to pass `--configfile`. Precedence (highest wins): `--config key=value` on the CLI → `--configfile` files (later override earlier) → in-code defaults via `config.get(...)`. `--config` is how `gpu_ids` switches hardware per invocation without committing host-specific defaults.
 
 > [!NOTE]
-> Any non-null `gpu_ids` requires an NVIDIA host with `nvidia-container-toolkit` configured on the docker daemon. `gpu_ids: "all"` additionally needs `nvidia-smi` on the execution host, which the NVIDIA driver already provides.
+> With Docker, any non-null `gpu_ids` requires an NVIDIA host with `nvidia-container-toolkit` configured on the docker daemon. `gpu_ids: "all"` additionally needs `nvidia-smi` on the execution host, which the NVIDIA driver already provides.
 
 ### Multi-GPU scheduling
 
-Two top-level run-config keys decide which image variant every stage runs and which devices its containers may use:
+For Docker, two top-level run-config keys decide which image variant every stage runs and which devices its containers may use:
 
 ```yaml
 # Container runtime GPU pool. One of:
@@ -437,7 +439,7 @@ Pin a mode only when you know the host. Setting `root` on a **rootful** daemon r
 
 **Unsupported: rootful Docker with [user-namespace remapping](https://docs.docker.com/engine/security/userns-remap/).** That mode maps container uids onto subordinate host uids, so neither container root nor your own uid owns the bind mount and no automatic choice is correct. `auto` detects it and fails at parse time rather than planning a run whose outputs nobody can read. Pin `host` or `root` to proceed and accept the ownership that follows.
 
-Detection describes the machine that runs `snakemake`, not any machine that later runs a job. That matches the current local execution model; a future cluster executor dispatching to remote hosts would need the mode pinned per run instead.
+Detection describes the machine that runs `snakemake`. The HTCondor workflow uses Apptainer and does not apply `docker_user`.
 
 Override it per invocation with `--config docker_user=root`. The value is validated by `resolve_docker_user` (`src/utils/docker.py`) at Snakefile parse time, so a typo fails before any job runs.
 
@@ -486,6 +488,8 @@ Jobs that are already up to date are drawn with dashed borders. Prefer SVG: a fa
 ---
 
 ## Closing the Loop
+
+For an introductory run, see [Quick start](../README.md#quick-start).
 
 The pipeline repeats forward passes toward a transport-consistent state. Stage 5's transport solution supplies two kinds of feedback for the next pass. A new Stage 1 input contains the evolved pressure. Stages 3, 4, and 5 read the evolved kinetic profiles as prescribed profiles. Each iteration uses its own `outputs/<run>/loop/iter_N/` directory. Thus, feedback does not form a cycle within a single Snakemake DAG. The external driver (`src/ouroboros.py`, exposed as the `driftless-star` pixi task) runs each iteration as an independent Snakemake run. It copies the previous pass's feedback files into the next pass's inputs. The driver reads committed inputs under `inputs/<run>/` without changing them.
 
@@ -615,9 +619,9 @@ Omitted keys default to `true`, so an absent block reproduces exactly the behavi
 
 **How the flags take effect.** A plain `snakemake` never freezes anything; it validates the block and then treats every enabled stage as rerunning. The flags bite only through the driver's `loop_overrides.yaml`, which from iteration 2 restates the validated flag map under `loop.rerun` and adds `loop.reuse_output_dir: <output_dir>/loop/iter_1/output`. The Snakefile drops a frozen stage's rules only when that reuse tree is present in the merged config, which is why iteration 1 and every non-loop invocation still build every enabled stage. `loop.reuse_output_dir` is driver-owned; the driver rejects a run config that sets it, since it would freeze stages already in iteration 1.
 
-**Frozen Stage 1.** When Stage 1 is frozen, the loop does not feed pressure back to the equilibrium. Each iteration copies its `s1_input` from the base inputs. The geometry stays fixed while the profiles evolve. Post-processing copies the unchanged Stage 1 input into its feedback file. It logs that it skipped pressure export. This also applies in iteration 1. The initial equilibrium solve still runs.
+**Frozen Stage 1.** When Stage 1 is frozen, the loop does not feed pressure back to the equilibrium. Each iteration copies its `s1_input` from the base inputs. The geometry stays fixed while the profiles evolve. Post-processing copies the unchanged Stage 1 input into its feedback file. It logs that it skipped pressure export. This also applies in iteration 1. The initial equilibrium solve still runs unless an up-to-date output is supplied, as in the [W7-X benchmark](../inputs/w7-x/t3d_benchmark/README.md).
 
-**Provenance.** The `profiles_source: prescribed` override is emitted only for enabled stages that rerun, so a frozen Stage 3 or 4 keeps recording the `analytical` source its iteration 1 run actually used.
+**Provenance.** The `profiles_source: prescribed` override is emitted only for enabled stages that rerun, so a frozen Stage 3 or 4 retains the profile source configured for iteration 1.
 
 **All enabled stages frozen.** Nothing can change between iterations, so the driver logs that, runs one forward pass, and stops regardless of `--max-iters`.
 
@@ -629,20 +633,21 @@ Each iteration runs under its own `outputs/<run>/loop/iter_N/`: `input/` holds t
 outputs/<run>/loop/iter_N/
 ├── input/                              # seeded each pass (run config + boundary + Stage 3/4/5 configs)
 │   ├── config.yaml
-│   ├── vmec_input.<run>                # boundary that fed this pass (base on iter 1, previous pressure feedback after)
-│   ├── sfincs_input.<run>              # only when Stage 3 is enabled
-│   ├── <run>.toml                      # only when Stage 4 is enabled
+│   ├── effective_config.yaml          # run config with invocation overrides and this iteration's paths
+│   ├── vmec_input.<run_name>           # boundary that fed this pass (base on iter 1, previous pressure feedback after)
+│   ├── sfincs_input.<run_name>         # only when Stage 3 is enabled
+│   ├── <run_name>.toml                 # only when Stage 4 is enabled
 │   ├── common_input.toml               # shared Stage 3/4/5 config (base on iter 1, previous prescribed profiles after)
 │   └── loop_overrides.yaml             # when needed from iter 2, records prescribed profiles and frozen-output reuse
 └── output/
     ├── stage1_equilibrium/ ... stage5_transport/   # stage dirs this pass ran (frozen stages appear only under iter_1)
     └── stage5_post_processing/
         ├── converge_status.json        # convergence signal (the Snakemake target)
-        ├── vmec_input.<run>            # evolved boundary, seeded into iter_{N+1}/input/
+        ├── vmec_input.<run_name>       # evolved boundary, seeded into iter_{N+1}/input/
         └── common_input.toml           # prescribed profiles, seeded into iter_{N+1}/input/
 ```
 
-`<run>` is the configured `run_name` (e.g. `HSX_vacuum_ns201_quickrun`). Everything lives under `outputs/` (gitignored); committed inputs are untouched.
+`<run>` is the run directory, such as `quick_run` or `w7-x/t3d_benchmark`. `<run_name>` is the configured `run_name`, such as `HSX_vacuum_ns201_quickrun` or `w7x_t3d_reconstruction`. Everything lives under `outputs/` (gitignored); committed inputs are untouched.
 
 ### Convergence
 
@@ -674,6 +679,10 @@ The RMS method allows a change confined to a few radii to be averaged below the 
 If the transport solution has fewer than two distinct time slices, convergence cannot be assessed and the pass is not converged, which is neither a halt nor an error.
 
 > [!NOTE]
-> To render the file-flow graph *including* this post-processing step, target the signal file; see the [README](../README.md#visualize-the-pipeline-graph). Omitting the target graphs the plain forward pass (stops at Stage 5).
+> To render the file-flow graph including post-processing, target the convergence signal as shown below. See [Visualizing the file-flow graph](#visualizing-the-file-flow-graph) for renderer setup and other formats. Omitting the target graphs the plain forward pass, which stops at Stage 5.
+
+```bash
+pixi run -e pipeline bash -c 'snakemake --filegraph outputs/quick_run/stage5_post_processing/converge_status.json --configfile inputs/quick_run/config.yaml | dot -Tsvg > driftless-star_filegraph.svg'
+```
 
 ---

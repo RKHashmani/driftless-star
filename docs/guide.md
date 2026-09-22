@@ -22,19 +22,18 @@ The pipeline prioritizes JAX-native implementations for differentiability and in
 | 1. Equilibrium | Ideal-MHD force balance | `vmex`, `DESC` | `VMEC++` | INDATA/JSON boundary coefficients, pressure/iota/current coefficients, PHIEDGE | `wout_*.nc` (NetCDF) |
 | 2. Boozer Transform | Coordinate transform to Boozer angles | `booz_xform_jax` | `BOOZ_XFORM` | `wout_*.nc` | `boozmn_*.nc` (NetCDF) |
 | 3. Neoclassical | Effective ripple, drift-kinetic transport | `NEO_JAX`, `DKX` | `NEO`, `SFINCS` | `NEO_JAX` uses `boozmn_*.nc`. The DKX scan uses `wout_*.nc`, `boozmn_*.nc`, profiles, and a namelist. | `neo_out.*`, `dkx_flux_profiles.h5` |
-| 4. Turbulence | Delta-f gyrokinetic equation | `GKX` | `GX`, `GENE` | Geometry + species profiles/gradients | gamma, omega, heat/particle flux (NetCDF/CSV) |
+| 4. Turbulence | Delta-f gyrokinetic equation | `GKX` | `GX`, `GENE` | Geometry + species profiles/gradients | `neopax_fluxes.h5` (HDF5 heat and particle flux profiles) |
 | 5. Transport | 1D conservation laws for n_s, p_s | `NEOPAX` | `Trinity3D` | geometry + fluxes | n(r), T(r), E_r(r), P_fus, Q (HDF5/NetCDF) |
 
 ### Pipeline DAG
 
-> [!TODO]
-> Define Minimum Viable Pipeline (MVP) DAG.
+See the [workflow diagram](../README.md#how-it-works) for the stage dependencies and [Visualizing the file-flow graph](mvp-pipeline.md#visualizing-the-file-flow-graph) to generate a graph from the current workflow.
 
 ### Interface Contracts
 
 Currently, most inter-stage communication is **file-based** using standard physics file formats:
-- **NetCDF** (`.nc`): equilibrium (`wout_*.nc`), Boozer (`boozmn_*.nc`), turbulence outputs
-- **HDF5** (`.h5`): neoclassical outputs (`dkx_flux_profiles.h5`), `NEOPAX` profiles
+- **NetCDF** (`.nc`): equilibrium (`wout_*.nc`), Boozer (`boozmn_*.nc`)
+- **HDF5** (`.h5`): neoclassical outputs (`dkx_flux_profiles.h5`), turbulent fluxes (`neopax_fluxes.h5`), `NEOPAX` profiles (`transport_solution.h5`)
 
 Snakemake rules define which files connect which stages. Each stage's `spec.md` is the authoritative source for required/optional fields in its output files. Where alternative implementations use different file formats or field names, a wrapper or adapter layer will be needed to translate between them.
 
@@ -44,7 +43,7 @@ Snakemake rules define which files connect which stages. Each stage's `spec.md` 
 
 1. **Screening-only outputs vs. transport state variables.** `NEO_JAX`'s epsilon_eff is central to ranking candidate geometries but is NOT advanced by a transport solver. It should not be wired as a transport input.
 2. **Dual-role outputs.** Heat/particle flux from `GKX` and neoclassical flux from `DKX` are simultaneously optimization objectives (to minimize) AND direct numerical inputs for transport profile evolution.
-3. **Turbulence coupling.** `NEOPAX` has turbulence-coupling utilities, but the `GKX` -> `NEOPAX` path (Stage 4 -> Stage 5) is not yet the default.
+3. **Turbulence coupling.** The default forward pass supplies `GKX` fluxes to `NEOPAX` through `neopax_fluxes.h5`. Shared flux selectors can [skip Stage 3 or Stage 4](mvp-pipeline.md#automatic-producer-skipping).
 
 ### Swappability Patterns
 
@@ -82,7 +81,7 @@ The pipeline should eventually support config-driven implementation swapping. Po
 1. Fork the repository and branch from `main` (e.g., `feat/stage1-newsoftware`, `fix/update-naming-schema`)
 2. Work through the relevant phase below
 3. Open a PR from the fork when deliverables are ready and request a review
-4. After review and merge, the corresponding progress item in the [README](../README.md#progress) gets checked off
+4. Keep the relevant stage specification up to date as the implementation changes.
 
 ## Phase 1: Document & Run
 
@@ -239,10 +238,10 @@ Place tests in `tests/stage{N}-{name}/`.
 
 **Integration tests.** Verify that the stage's output is valid input for its downstream consumers. For example:
 - Stage 1: verify `wout_*.nc` can be read by `booz_xform_jax` (Stage 2), `DKX` (Stage 3), and `GKX` (Stage 4)
-- Stage 2: verify `boozmn_*.nc` can be read by `NEO_JAX` (Stage 3)
+- Stage 2: verify `boozmn_*.nc` can be read by the `DKX` and `GKX` scans and `NEOPAX`
 - Stage 3: verify `dkx_flux_profiles.h5` (from `DKX`) can be read by `NEOPAX` (Stage 5)
-- Stage 4: verify flux CSV output can be consumed by `NEOPAX` (Stage 5)
-- Stage 5: verify end-to-end output (`profiles.h5`: n(r), T(r), E_r(r), P_fus, Q) is produced correctly
+- Stage 4: verify `neopax_fluxes.h5` can be consumed by `NEOPAX` (Stage 5)
+- Stage 5: verify end-to-end output (`transport_solution.h5`: n(r), T(r), E_r(r), P_fus, Q) is produced correctly
 - Stage 5 → Stage 1: verify updated profiles from Stage 5 can be fed back as input to Stage 1 to close the optimization loop
 
 Consult plasma experts for additional details.
