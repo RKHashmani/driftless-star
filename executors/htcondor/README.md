@@ -63,14 +63,24 @@ pixi run driftless-star-fwd \
 
 The five [comparison cases](../../inputs/w7-x/) under `inputs/w7-x/` use the same HTCondor profile as `quick_run`. The neoclassical-on comparison bundles include their Stage 3 SFINCS-format namelist for DKX. The neoclassical-off bundles omit it.
 
-Edit the selected staging `config.yaml` so that `input_dir` and `output_dir` are absolute paths. Then start the closed-loop validation run from the repository root:
+Copy the selected bundle to staging, keeping the `inputs/w7-x/<case>/` layout. Edit its staged `config.yaml` so that `input_dir` and `output_dir` are absolute paths under `$RUN_ROOT`. For `t3d_benchmark`, use the staged `inputs/w7-x/t3d_benchmark` and `outputs/w7-x/t3d_benchmark` directories.
+
+For a fresh benchmark run, copy the supplied equilibrium into the first iteration's Stage 1 output directory. Use an ordinary copy without preserving its original modification time.
+
+```sh
+mkdir -p "$RUN_ROOT/outputs/w7-x/t3d_benchmark/loop/iter_1/output/stage1_equilibrium"
+cp "$RUN_ROOT/inputs/w7-x/t3d_benchmark/wout_w7x_t3d_reconstruction.nc" \
+    "$RUN_ROOT/outputs/w7-x/t3d_benchmark/loop/iter_1/output/stage1_equilibrium/wout_w7x_t3d_reconstruction.nc"
+```
+
+The [benchmark instructions](../../inputs/w7-x/t3d_benchmark/README.md) show the same placement for a local run. Start the staged loop from the repository root.
 
 ```
 pixi run driftless-star \
-    --config $RUN_ROOT/inputs/w7-x_t3d_validation/config.yaml \
+    --config "$RUN_ROOT/inputs/w7-x/t3d_benchmark/config.yaml" \
     --profile executors/htcondor/profiles/htcondor-gpu \
     --container-runtime apptainer --gpu-ids all \
-    --max-iters 10 --cores 8
+    --max-iters 400 --cores 8
 ```
 
 Use `--gpu-ids all` on HTCondor. The five comparison configs already select `all`. In Apptainer mode, this option selects the GPU images and records the effective cluster configuration.
