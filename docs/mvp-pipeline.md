@@ -500,8 +500,8 @@ pixi run driftless-star --max-iters 3 --cores 4
 | Flag          | Default       | Meaning                                              |
 | ------------- | ------------- | ---------------------------------------------------- |
 | `--config`    | `inputs/quick_run/config.yaml` | Pipeline run config file.               |
-| `--max-iters` | `3`           | Cap on loop iterations; the signal can stop the loop earlier. |
-| `--cores`     | `4`           | Cores passed to `snakemake --cores`.                 |
+| `--max-iters` | `20`          | Cap on loop iterations; the signal can stop the loop earlier. |
+| `--cores`     | `8`           | Cores passed to `snakemake --cores`.                 |
 | `--gpu-ids`   | the config's `gpu_ids` | Forwarded to every iteration's `snakemake --config` (see [Multi-GPU scheduling](#multi-gpu-scheduling)). |
 | `--jobs-per-gpu` | the config's `jobs_per_gpu` | Forwarded to every iteration's `snakemake --config`. |
 | `--profile`   | none, so iterations run locally | Snakemake profile directory forwarded to every iteration, e.g. `executors/htcondor/profiles/htcondor-gpu` to run on HTCondor. |
