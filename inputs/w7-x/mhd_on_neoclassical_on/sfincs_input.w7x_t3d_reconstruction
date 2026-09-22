@@ -1,37 +1,27 @@
 ! Input file for the W7-X Trinity3D validation run with SFINCS version 3.
-! See the user manual for documentation of the parameters in this file.
-!
-! This is a TEMPLATE. The Stage 3 radial scan (stages/stage3-neoclassical/
-! sfincs_jax_radial_scan.py, _prepare_input_text) rewrites one copy of it per flux
-! surface, overwriting the keys marked "patched" below. Only the unmarked keys are
-! taken from this file, so the species entries here are single-species placeholders
-! even though this run has two species (e, ion) -- they are replaced wholesale.
 !----------------------------------------------------------------------
 
 &general
-  RHSMode = 1   ! patched
+  RHSMode = 1
 /
 
 &geometryParameters
   geometryScheme = 5 ! VMEC
 
-  inputRadialCoordinate = 3   ! rN -- patched
-  rN_wish = 0.1               ! patched per surface from the profile grid
+  inputRadialCoordinate = 3   ! rN
+  rN_wish = 0.125
 
   VMECRadialOption = 0
-  ! The equilibrium is passed to the solver via --wout-path, not through this namelist.
   min_Bmn_to_load = 0
 /
 
 &speciesParameters
-  ! All six keys below are patched per surface: Zs/mHats from [species] in
-  ! common_input.toml, nHats/THats and their gradients from the profile snapshot.
-  Zs = 1
-  mHats = 1.0d+0
-  nHats = 1.0d+0
-  THats = 1.0d+0
-  dNHatdrNs = 1.0d+0
-  dTHatdrNs = 1.0d+0
+  Zs = -1 1
+  mHats = 0.000544617 1
+  nHats = 0.3476084184 0.3476084184
+  THats = 6.2450287945 0.9920280610000001
+  dNHatdrNs = -0.03061224479999991 -0.03061224479999991
+  dTHatdrNs = -5.780436535999989 -0.1020408159999997
 /
 
 &physicsParameters
@@ -40,7 +30,7 @@
   Delta = 4.5694e-3  !Defines the temperature and mass, B_bar=1, R_bar=1 for VMEC inputs
   alpha = 1.0     !Defines units of Electric field, related with temperature
   nu_n= 8.330e-3     !Defnes units of species parameters
-  Er = 0.0        ! patched per surface (er0_scale = 0.0 in this run, so Er stays 0)
+  Er = 0.0
 
   collisionOperator =  0
   includeXDotTerm = .true.
@@ -50,10 +40,10 @@
 /
 
 &resolutionParameters
-  ! All five keys below are patched from [stage3.sfincs_jax] in config.yaml.
   Ntheta = 5
   Nzeta = 11
   Nxi = 12
+  NL = 3
   Nx = 4
   solverTolerance = 1d-6
 /
