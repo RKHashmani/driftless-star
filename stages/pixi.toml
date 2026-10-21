@@ -21,10 +21,10 @@ h5py = ">=3.16.0,<4"
 packaging = ">=24.2,<27"
 filelock = ">=3.20.3,<4"
 booz-xform-jax = ">=0.5.0,<0.6"
-solvax = ">=0.20.0,<0.21"
+solvax = ">=0.28.3,<0.29"
 
 [feature.vmex.pypi-dependencies]
-vmex = { git = "https://github.com/uwplasma/vmex.git", rev = "35e7170a24ab33fce4d4d25dc7f448279c279e7f" }
+vmex = { git = "https://github.com/uwplasma/vmex.git", rev = "4f56c6e2aba18ffa4c0466c830cee85967ad63d1" }
 
 [feature.vmex.tasks.stage-1-vmex]
 cmd = "python stage1-equilibrium/run_vmex.py --input ../inputs/quick_run/vmec_input.HSX_vacuum_ns201_quickrun --output ../outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc"

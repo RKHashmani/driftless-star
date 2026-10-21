@@ -897,12 +897,12 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.7-h4df99d1_106.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.20.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/vmex.git?rev=35e7170a24ab33fce4d4d25dc7f448279c279e7f#35e7170a24ab33fce4d4d25dc7f448279c279e7f
+      - pypi: git+https://github.com/uwplasma/vmex.git?rev=4f56c6e2aba18ffa4c0466c830cee85967ad63d1#4f56c6e2aba18ffa4c0466c830cee85967ad63d1
       linux-aarch64:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/blosc-1.21.6-hb4dfabd_1.conda
@@ -1035,12 +1035,12 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.7-h4df99d1_106.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.20.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/vmex.git?rev=35e7170a24ab33fce4d4d25dc7f448279c279e7f#35e7170a24ab33fce4d4d25dc7f448279c279e7f
+      - pypi: git+https://github.com/uwplasma/vmex.git?rev=4f56c6e2aba18ffa4c0466c830cee85967ad63d1#4f56c6e2aba18ffa4c0466c830cee85967ad63d1
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/booz-xform-jax-0.5.0-pyhc364b38_0.conda
@@ -1069,7 +1069,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.7-h4df99d1_106.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.20.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
@@ -1178,7 +1178,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/xorg-libxdmcp-1.1.5-h84a0fba_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-h31dac16_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hf451053_7.conda
-      - pypi: git+https://github.com/uwplasma/vmex.git?rev=35e7170a24ab33fce4d4d25dc7f448279c279e7f#35e7170a24ab33fce4d4d25dc7f448279c279e7f
+      - pypi: git+https://github.com/uwplasma/vmex.git?rev=4f56c6e2aba18ffa4c0466c830cee85967ad63d1#4f56c6e2aba18ffa4c0466c830cee85967ad63d1
   stage-1-vmex-gpu:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1357,12 +1357,12 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.7-h4df99d1_106.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.20.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/vmex.git?rev=35e7170a24ab33fce4d4d25dc7f448279c279e7f#35e7170a24ab33fce4d4d25dc7f448279c279e7f
+      - pypi: git+https://github.com/uwplasma/vmex.git?rev=4f56c6e2aba18ffa4c0466c830cee85967ad63d1#4f56c6e2aba18ffa4c0466c830cee85967ad63d1
   stage-2-booz:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -21344,21 +21344,6 @@ packages:
   run_exports: {}
   size: 122544
   timestamp: 1785960384795
-- conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.20.0-pyhc364b38_0.conda
-  sha256: a6259bcd40e2a17013f4a83887facf1c5f0c14163d26b0f962f1bf562c314a22
-  md5: efe233df82fdc0a346897589ed157336
-  depends:
-  - python >=3.10
-  - jax
-  - equinox
-  - python
-  license: MIT
-  license_family: MIT
-  purls:
-  - pkg:pypi/solvax?source=hash-mapping
-  run_exports: {}
-  size: 138146
-  timestamp: 1788161896214
 - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
   sha256: c7f66250390a1cbe56b07a02dced1559a1fd72003e064988878e34915b5e1127
   md5: 8d6153b4b5359325c245f4553dd5a0fc
@@ -27007,30 +26992,32 @@ packages:
   - f90nml ; extra == 'io'
   - h5py ; extra == 'io'
   requires_python: '>=3.10'
-- pypi: git+https://github.com/uwplasma/vmex.git?rev=35e7170a24ab33fce4d4d25dc7f448279c279e7f#35e7170a24ab33fce4d4d25dc7f448279c279e7f
+- pypi: git+https://github.com/uwplasma/vmex.git?rev=4f56c6e2aba18ffa4c0466c830cee85967ad63d1#4f56c6e2aba18ffa4c0466c830cee85967ad63d1
   name: vmex
-  version: 0.8.1
+  version: 0.11.11
   requires_dist:
   - numpy
-  - jax>=0.4.36
-  - jaxlib>=0.4.36
-  - scipy>=1.15
+  - jax>=0.9.2
+  - jaxlib>=0.9.2
+  - scipy>=1.16
   - netcdf4
+  - netcdf4<1.7.5 ; sys_platform == 'darwin'
   - h5py
   - matplotlib
   - packaging
   - filelock
-  - booz-xform-jax>=0.1.1
-  - solvax>=0.20.0
-  - tomli ; python_full_version < '3.11'
+  - booz-xform-jax>=0.4.3
+  - solvax>=0.27.0
   - jaxopt ; extra == 'optimizers'
   - optax ; extra == 'optimizers'
-  - neo-jax>=1.0.2 ; extra == 'neoclassical'
-  - virtual-casing-jax>=0.0.5 ; extra == 'freeb'
-  - gkx>=1.7.1 ; extra == 'turbulence'
+  - neo-jax>=1.0.6 ; extra == 'neoclassical'
+  - dkx>=2.8.0 ; extra == 'neoclassical'
+  - virtual-casing-jax>=0.0.9 ; extra == 'freeb'
+  - gkx>=2.5.0 ; extra == 'turbulence'
   - jax>=0.10.1 ; extra == 'turbulence'
   - jaxlib>=0.10.1 ; extra == 'turbulence'
-  - essos>=0.16 ; extra == 'coils'
+  - essos>=0.21.0 ; extra == 'coils'
+  - vmex[coils,freeb,neoclassical,optimizers,turbulence] ; extra == 'all'
   - sphinx ; extra == 'docs'
   - sphinx-copybutton ; extra == 'docs'
   - furo ; extra == 'docs'
@@ -27050,7 +27037,7 @@ packages:
   - sphinx-design ; extra == 'dev'
   - sphinxext-rediraffe ; extra == 'dev'
   - types-setuptools ; extra == 'dev'
-  requires_python: '>=3.10'
+  requires_python: '>=3.11'
 - pypi: git+https://github.com/uwplasma/vmex.git?rev=en%2Flocal_test#2fd82e7bccd951f612740d225c5c64b12d747689
   name: vmex
   version: 0.3.0
