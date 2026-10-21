@@ -562,7 +562,7 @@ loop:
 
 The choices are `akima_spline`, `cubic_spline`, and `power_series`. If you omit the setting, the workflow selects `power_series`. Both spline modes pass the supplied samples directly to VMEX. The writer keeps the axis and edge samples. It rejects more than 101 spline knots. It requires finite, strictly increasing radii that span `[0, 1]`. It corrects endpoint roundoff only within `1e-12`. Pressure must be finite and non-negative. The writer does not extrapolate or rescale truncated grids. When Stage 1 evolves, the loop driver rejects a configured `rho_edge < 1`. The writer then checks the actual grid.
 
-The [pinned VMEX profile implementation](https://github.com/uwplasma/vmex/blob/35e7170a24ab33fce4d4d25dc7f448279c279e7f/vmex/core/profiles.py) evaluates both spline types in pascals. Interpolation between samples can overshoot or change gradient sign. The writer does not clip or smooth samples. Splines do not guarantee better equilibrium convergence.
+The VMEX profile implementation evaluates both spline types in pascals. Interpolation between samples can overshoot or change gradient sign. The writer does not clip or smooth samples. Splines do not guarantee better equilibrium convergence.
 
 Run the loop with `quick_run` using the existing stage images.
 
