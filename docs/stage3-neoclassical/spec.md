@@ -98,7 +98,7 @@ Total `epstot` is the sum over classes.
 
 **SFINCS (Legacy):** <https://github.com/landreman/sfincs>
 
-The DKX environments pin version 2.4.0 to [Git revision `94506ae337b7825a161a47a614511ab5b538b37b`](https://github.com/uwplasma/DKX/tree/94506ae337b7825a161a47a614511ab5b538b37b). DKX requires Python 3.11 or later and SOLVAX 0.21 or later. The stage lockfile supplies shared scientific packages through conda, including SOLVAX 0.22.
+`stages/pixi.toml` pins the DKX revision, and the stage lockfile supplies its shared scientific packages, including SOLVAX, through conda.
 
 ### Input Specification
 

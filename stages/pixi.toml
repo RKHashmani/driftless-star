@@ -64,10 +64,10 @@ h5py = ">=3.16.0,<4"
 netcdf4 = ">=1.7.4,<2"
 matplotlib-base = ">=3.10.8,<4"
 rich = ">=13,<16"
-solvax = ">=0.22.0,<0.23"
+solvax = ">=0.28.3,<0.29"
 
 [feature.dkx.pypi-dependencies]
-dkx = { git = "https://github.com/uwplasma/DKX.git", rev = "94506ae337b7825a161a47a614511ab5b538b37b" }
+dkx = { git = "https://github.com/uwplasma/DKX.git", rev = "9144e734b1622a518b61208dffe66830bf684f85" }
 
 [feature.dkx.tasks.stage-3-dkx]
 cmd = "dkx sfincs write-output --input ../inputs/quick_run/sfincs_input.HSX_vacuum_ns201_quickrun --out ../outputs/quick_run/stage3_neoclassical/sfincsOutput_quickrun.h5 --equilibrium-file ../outputs/quick_run/stage1_equilibrium/wout_HSX_vacuum_ns201_quickrun.nc"
