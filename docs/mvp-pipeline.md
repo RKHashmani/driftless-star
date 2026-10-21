@@ -144,7 +144,7 @@ python stages/stage2-boozer/run_boozer.py \
 
 ## Stage 3 -- Neoclassical
 
-The forward-pass solver is DKX. The stage environment pins version 2.11.0 to Git revision `9144e734b1622a518b61208dffe66830bf684f85`.
+The forward-pass solver is DKX. `stages/pixi.toml` pins its revision.
 
 | Direction | Format                       | Location                                                                       |
 | --------- | ---------------------------- | ------------------------------------------------------------------------------ |
