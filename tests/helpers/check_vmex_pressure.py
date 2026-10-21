@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 
 import jax
 import numpy as np
@@ -19,6 +20,8 @@ def main():
     provenance = json.loads(importlib.metadata.distribution("vmex").read_text("direct_url.json"))
     writer = load_stage_module("stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py")
     root = Path(__file__).resolve().parents[2]
+    pin = tomllib.loads((root / "stages/pixi.toml").read_text())["feature"]["vmex"]["pypi-dependencies"]["vmex"]["rev"]
+    assert provenance["vcs_info"]["commit_id"] == pin, provenance
     template = root / "inputs/quick_run/vmec_input.HSX_vacuum_ns201_quickrun"
     representative_s = np.array([.02, .5, .9])
     # These fixed results come from the pinned VMEX revision.

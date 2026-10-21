@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +20,8 @@ def main():
     jax.config.update("jax_enable_x64", True)
     provenance = json.loads(importlib.metadata.distribution("vmex").read_text("direct_url.json"))
     root = Path(__file__).resolve().parents[1]
+    pin = tomllib.loads((root / "stages/pixi.toml").read_text())["feature"]["vmex"]["pypi-dependencies"]["vmex"]["rev"]
+    assert provenance["vcs_info"]["commit_id"] == pin, provenance
     writer_path = root / "stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py"
     spec = importlib.util.spec_from_file_location("pressure_writer", writer_path)
     writer = importlib.util.module_from_spec(spec)
