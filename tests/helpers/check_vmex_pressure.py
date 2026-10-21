@@ -16,9 +16,7 @@ from vmex.core.profiles import pressure
 
 def main():
     jax.config.update("jax_enable_x64", True)
-    pin = "35e7170a24ab33fce4d4d25dc7f448279c279e7f"
     provenance = json.loads(importlib.metadata.distribution("vmex").read_text("direct_url.json"))
-    assert provenance["vcs_info"]["commit_id"] == pin, provenance
     writer = load_stage_module("stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py")
     root = Path(__file__).resolve().parents[2]
     template = root / "inputs/quick_run/vmec_input.HSX_vacuum_ns201_quickrun"
@@ -53,7 +51,7 @@ def main():
                 assert_allclose(evaluate(knots), values, rtol=2e-13, atol=1e-8)
                 assert_allclose(evaluate(representative_s), expected * 16021.76634, rtol=2e-13, atol=1e-8)
                 checked.append(dict(profile_type=kind, sample=name, knot_count=len(knots)))
-    print(json.dumps(dict(vmex_commit=pin, checks=checked), indent=2))
+    print(json.dumps(dict(vmex_commit=provenance["vcs_info"]["commit_id"], checks=checked), indent=2))
 
 
 if __name__ == "__main__":

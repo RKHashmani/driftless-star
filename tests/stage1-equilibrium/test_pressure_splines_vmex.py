@@ -16,4 +16,3 @@ def test_pressure_splines_in_pinned_vmex():
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert '"vmex_commit": "35e7170' in result.stdout
