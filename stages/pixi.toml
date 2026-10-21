@@ -113,10 +113,12 @@ interpax = ">=0.3.13,<0.4"
 matplotlib = ">=3.10.8,<4"
 h5py = ">=3.16.0,<4"
 netcdf4 = ">=1.7.4,<2"
+booz-xform-jax = ">=0.5.0,<0.6"
+solvax = ">=0.28.3,<0.29"
 
 [feature.neopax.pypi-dependencies]
 orthax = ">=0.2.8, <0.3"
-neopax = { git = "https://github.com/uwplasma/NEOPAX.git", rev = "9bc2b6a829845c57280620ee9dfc3e9fa9f4ebab" }
+neopax = { git = "https://github.com/uwplasma/NEOPAX.git", rev = "ce4ea4d36e327bd6c826c62b1cf4a1e3260c9856" }
 
 [feature.neopax.tasks.stage-5-neopax]
 cwd = "../inputs/quick_run"
