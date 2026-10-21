@@ -31,7 +31,7 @@ from tests.helpers.stage_import import load_stage_module
 
 scan = load_stage_module("stages/stage3-neoclassical/dkx_radial_scan.py")
 
-SOLVER = {"name": "dkx", "version": "2.4.0", "revision": "test-revision"}
+SOLVER = {"name": "dkx", "version": "test-version", "revision": "test-revision"}
 
 
 @pytest.fixture(autouse=True)
