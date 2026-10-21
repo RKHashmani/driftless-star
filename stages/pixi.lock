@@ -2268,12 +2268,12 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.22.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/DKX.git?rev=94506ae337b7825a161a47a614511ab5b538b37b#94506ae337b7825a161a47a614511ab5b538b37b
+      - pypi: git+https://github.com/uwplasma/DKX.git?rev=9144e734b1622a518b61208dffe66830bf684f85#9144e734b1622a518b61208dffe66830bf684f85
       linux-aarch64:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/aws-c-auth-0.10.4-h31aafc4_2.conda
@@ -2418,12 +2418,12 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.22.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/DKX.git?rev=94506ae337b7825a161a47a614511ab5b538b37b#94506ae337b7825a161a47a614511ab5b538b37b
+      - pypi: git+https://github.com/uwplasma/DKX.git?rev=9144e734b1622a518b61208dffe66830bf684f85#9144e734b1622a518b61208dffe66830bf684f85
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.7.22-hbd8a1cb_0.conda
@@ -2454,7 +2454,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.22.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
@@ -2563,7 +2563,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/xorg-libxdmcp-1.1.5-h84a0fba_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-h31dac16_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hf451053_7.conda
-      - pypi: git+https://github.com/uwplasma/DKX.git?rev=94506ae337b7825a161a47a614511ab5b538b37b#94506ae337b7825a161a47a614511ab5b538b37b
+      - pypi: git+https://github.com/uwplasma/DKX.git?rev=9144e734b1622a518b61208dffe66830bf684f85#9144e734b1622a518b61208dffe66830bf684f85
   stage-3-dkx-gpu:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -2744,12 +2744,12 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-9_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.22.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/DKX.git?rev=94506ae337b7825a161a47a614511ab5b538b37b#94506ae337b7825a161a47a614511ab5b538b37b
+      - pypi: git+https://github.com/uwplasma/DKX.git?rev=9144e734b1622a518b61208dffe66830bf684f85#9144e734b1622a518b61208dffe66830bf684f85
   stage-3-neo-jax:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -21359,20 +21359,6 @@ packages:
   run_exports: {}
   size: 138146
   timestamp: 1788161896214
-- conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.22.0-pyhc364b38_0.conda
-  sha256: 85a2a1849235df7f1bb62ce505d9fc5cef02a15fb858da2415428709616edc9a
-  md5: fcc5ca9802551d265d7e0b8e50b0d175
-  depends:
-  - python >=3.10
-  - jax
-  - equinox
-  - python
-  license: MIT
-  purls:
-  - pkg:pypi/solvax?source=compressed-mapping
-  run_exports: {}
-  size: 141116
-  timestamp: 1789523341823
 - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
   sha256: c7f66250390a1cbe56b07a02dced1559a1fd72003e064988878e34915b5e1127
   md5: 8d6153b4b5359325c245f4553dd5a0fc
@@ -26915,9 +26901,9 @@ packages:
     - zstd >=1.5.7,<1.6.0a0
   size: 433687
   timestamp: 1786599629846
-- pypi: git+https://github.com/uwplasma/DKX.git?rev=94506ae337b7825a161a47a614511ab5b538b37b#94506ae337b7825a161a47a614511ab5b538b37b
+- pypi: git+https://github.com/uwplasma/DKX.git?rev=9144e734b1622a518b61208dffe66830bf684f85#9144e734b1622a518b61208dffe66830bf684f85
   name: dkx
-  version: 2.4.0
+  version: 2.11.0
   requires_dist:
   - jax
   - numpy>=2.1
@@ -26926,7 +26912,8 @@ packages:
   - netcdf4
   - matplotlib
   - rich>=13.0
-  - solvax>=0.21.0
+  - solvax>=0.28.1
+  - booz-xform-jax>=0.4.3 ; extra == 'booz'
   - pytest ; extra == 'dev'
   - pytest-cov ; extra == 'dev'
   - pytest-xdist ; extra == 'dev'
