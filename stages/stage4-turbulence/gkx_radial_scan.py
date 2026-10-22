@@ -37,6 +37,7 @@ import h5py
 import numpy as np
 from run_validity import begin_attempt, certify_completion, completion_status, input_fingerprint
 from run_validity import read_diagnostics_csv as _read_diagnostics_csv
+from solver_provenance import current_provenance, verify_provenance, verify_recorded_provenance
 from profile_parameters import (
     CONVENTION,
     geometry_scales,
@@ -143,10 +144,16 @@ def _runtime_toml_text(manifest: dict[str, Any], run_spec: dict[str, Any]) -> st
             f"t_max = {_toml_scalar(time_cfg['t_max'])}",
             f"dt = {_toml_scalar(time_cfg['dt'])}",
             f"method = {_toml_scalar(time_cfg['method'])}",
-            f"use_diffrax = {_toml_scalar(time_cfg['use_diffrax'])}",
+            f"collision_operator = {_toml_scalar(time_cfg['collision_operator'])}",
+            f"run_to = {_toml_scalar(time_cfg['run_to'])}",
+            f"damp_ends_rate = {_toml_scalar(time_cfg['damp_ends_rate'])}",
+            f"saturation_rel_sem = {_toml_scalar(time_cfg['saturation_rel_sem'])}",
+            (
+                f"saturation_min_window = {_toml_scalar(time_cfg['saturation_min_window'])}"
+                if time_cfg["saturation_min_window"] is not None else ""
+            ),
             f"sample_stride = {_toml_scalar(time_cfg['sample_stride'])}",
             f"diagnostics_stride = {_toml_scalar(time_cfg['diagnostics_stride'])}",
-            f"chunk_steps = {_toml_scalar(time_cfg['chunk_steps'])}" if time_cfg["chunk_steps"] is not None else "",
             f"fixed_dt = {_toml_scalar(time_cfg['fixed_dt'])}",
             f"cfl = {_toml_scalar(time_cfg['cfl'])}",
             f"state_sharding = {_toml_scalar(time_cfg['state_sharding'])}" if time_cfg["state_sharding"] is not None else "",
@@ -188,7 +195,6 @@ def _runtime_toml_text(manifest: dict[str, Any], run_spec: dict[str, Any]) -> st
             f"hypercollisions_const = {_toml_scalar(coll['hypercollisions_const'])}",
             f"hypercollisions_kz = {_toml_scalar(coll['hypercollisions_kz'])}",
             f"D_hyper = {_toml_scalar(coll['D_hyper'])}",
-            f"damp_ends_amp = {_toml_scalar(coll['damp_ends_amp'])}",
             f"damp_ends_widthfrac = {_toml_scalar(coll['damp_ends_widthfrac'])}",
             "",
             "[normalization]",
@@ -215,6 +221,7 @@ def _runtime_toml_text(manifest: dict[str, Any], run_spec: dict[str, Any]) -> st
             f"Nm = {_toml_scalar(run['Nm'])}",
             "",
             "[output]",
+            "plots = false",
             f"resolved_diagnostics = {_toml_scalar(output['resolved_diagnostics'])}",
             "",
         ]
@@ -305,6 +312,45 @@ def _coalesce(value: Any, template_value: Any, fallback: Any) -> Any:
     if template_value is not None:
         return template_value
     return fallback
+
+
+def _validate_template_controls(template: dict[str, Any]) -> None:
+    removed = {
+        "time": {
+            "use_diffrax": "remove it and select time.method",
+            "chunk_steps": "remove it, GKX manages integration chunks",
+        },
+        "collisions": {
+            "damp_ends_amp": (
+                "replace it with time.damp_ends_rate in inverse normalized time. "
+                "For the old nonlinear route, rate = amp. For the old fixed-step linear route, rate = amp / dt"
+            )
+        },
+    }
+    for section, controls in removed.items():
+        for key, guidance in controls.items():
+            if key in _template_section(template, section):
+                raise ValueError(f"Obsolete [{section}].{key}. Please {guidance}.")
+
+
+def _solver_controls(args: argparse.Namespace, template: dict[str, Any]) -> dict[str, Any]:
+    defaults = dict(collision_operator="lenard_bernstein", run_to="t_max", damp_ends_rate=0.1,
+                    saturation_rel_sem=0.05, saturation_min_window=None)
+    values = {key: _coalesce(getattr(args, key, None), template.get(key), default)
+              for key, default in defaults.items()}
+    for key, choices in (("collision_operator", ("lenard_bernstein", "landau")), ("run_to", ("t_max", "saturation"))):
+        if values[key] not in choices:
+            raise ValueError(f"time.{key} must be one of {choices}")
+    for key in ("damp_ends_rate", "saturation_rel_sem", "saturation_min_window"):
+        if values[key] is None:
+            continue
+        value = float(values[key])
+        if not math.isfinite(value) or value < 0 or (key != "damp_ends_rate" and value == 0):
+            raise ValueError(
+                f"time.{key} must be finite and {'nonnegative' if key == 'damp_ends_rate' else 'positive'}"
+            )
+        values[key] = value
+    return values
 
 
 def _template_section(template_cfg: dict[str, Any], name: str) -> dict[str, Any]:
@@ -551,6 +597,9 @@ def _build_manifest(
 
     template_path = _resolve_template_path(getattr(args, "gkx_template", None), common_config.resolve().parent)
     template_cfg = _maybe_load_toml(template_path)
+    _validate_template_controls(template_cfg)
+    solver_controls = _solver_controls(args, _template_section(template_cfg, "time"))
+    solver_provenance = current_provenance()
     template_grid = _template_section(template_cfg, "grid")
     template_time = _template_section(template_cfg, "time")
     template_geom = _template_section(template_cfg, "geometry")
@@ -845,7 +894,8 @@ def _build_manifest(
             )
 
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
+        "solver_provenance": solver_provenance,
         "profiles_source": str(args.profiles_source).lower(),
         "neopax_result": "" if neopax_result is None else str(neopax_result.resolve()),
         "common_config": str(common_config.resolve()),
@@ -876,15 +926,12 @@ def _build_manifest(
             "nperiod": int(_coalesce(args.nperiod, template_grid.get("nperiod"), 1)),
         },
         "time": {
+            **solver_controls,
             "t_max": float(_coalesce(args.t_max, template_time.get("t_max"), 100.0)),
             "dt": float(_coalesce(args.dt, template_time.get("dt"), 0.1)),
             "method": str(_coalesce(args.method, template_time.get("method"), "rk3")),
-            "use_diffrax": bool(_coalesce(args.use_diffrax, template_time.get("use_diffrax"), False)),
             "sample_stride": int(_coalesce(args.sample_stride, template_time.get("sample_stride"), 1)),
             "diagnostics_stride": int(_coalesce(args.diagnostics_stride, template_time.get("diagnostics_stride"), 1)),
-            "chunk_steps": None
-            if _coalesce(args.chunk_steps, template_time.get("chunk_steps"), None) is None
-            else int(_coalesce(args.chunk_steps, template_time.get("chunk_steps"), None)),
             "fixed_dt": bool(_coalesce(args.fixed_dt, template_time.get("fixed_dt"), False)),
             "cfl": float(_coalesce(args.cfl, template_time.get("cfl"), 1.0)),
             "state_sharding": None
@@ -909,7 +956,6 @@ def _build_manifest(
             "hypercollisions_const": float(_coalesce(args.hypercollisions_const, template_coll.get("hypercollisions_const"), 0.0)),
             "hypercollisions_kz": float(_coalesce(args.hypercollisions_kz, template_coll.get("hypercollisions_kz"), 1.0)),
             "D_hyper": float(_coalesce(args.d_hyper, template_coll.get("D_hyper"), 0.05)),
-            "damp_ends_amp": float(_coalesce(args.damp_ends_amp, template_coll.get("damp_ends_amp"), 0.1)),
             "damp_ends_widthfrac": float(_coalesce(args.damp_ends_widthfrac, template_coll.get("damp_ends_widthfrac"), 0.125)),
         },
         "normalization": {
@@ -1223,6 +1269,12 @@ def _resolve_run_spec(manifest: dict[str, Any], *, index: int | None, run_name: 
 
 def cmd_run_one(args: argparse.Namespace) -> int:
     manifest = _load_manifest(Path(args.manifest).resolve())
+    try:
+        verify_provenance(manifest)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot use GKX manifest: {exc}", file=sys.stderr)
+        return 2
+
     run_spec = _resolve_run_spec(manifest, index=args.index, run_name=getattr(args, "run_name", None))
     if completion_status(manifest, run_spec)[0]:
         diag_csv = _diagnostics_csv_path(run_spec)
@@ -1268,6 +1320,7 @@ def cmd_run_one(args: argparse.Namespace) -> int:
         str(config_path),
         "--out",
         output_prefix,
+        "--no-plots",
     ]
     if bool(getattr(args, "verbose_worker", False)):
         cmd.append("--progress")
@@ -1365,6 +1418,11 @@ def _launch_subprocess(
 def cmd_run(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest).resolve()
     manifest = _load_manifest(manifest_path)
+    try:
+        verify_provenance(manifest)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot use GKX manifest: {exc}", file=sys.stderr)
+        return 2
     runs = manifest["runs"]
     max_parallel = int(args.max_parallel)
     if max_parallel < 1:
@@ -1479,24 +1537,28 @@ def _time_average_columns(
     times = np.asarray(columns["t"], dtype=float)
     if times.size == 0:
         raise ValueError("Diagnostics CSV has an empty time axis")
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times) < 0):
+        raise ValueError("Diagnostics times must be finite and nondecreasing")
+    endpoint = float(times[-1]) if t_final_override is None else float(t_final_override)
+    if not math.isfinite(endpoint):
+        raise ValueError("Averaging endpoint must be finite")
+    t_end = min(float(times[-1]), endpoint)
     reducer = str(average_reducer).strip().lower()
     if reducer == "t3d_median":
         t_start = float(times[0])
-        t_end = float(times[-1])
-        return {
-            name: _t3d_median_estimator(np.asarray(values, dtype=float))
-            for name, values in columns.items()
-            if np.asarray(values, dtype=float).ndim == 1
-        }, t_start, t_end
-    t_end = float(times[-1]) if t_final_override is None else float(t_final_override)
-    if float(average_window) <= 0.0:
-        raise ValueError("--average-window must be > 0")
-    t_start = max(float(times[0]), t_end - float(average_window))
-    mask = times >= t_start
+        reduce = _t3d_median_estimator
+    elif reducer == "window_mean":
+        if not math.isfinite(average_window) or average_window <= 0.0:
+            raise ValueError("--average-window must be finite and > 0")
+        t_start = max(float(times[0]), t_end - float(average_window))
+        reduce = lambda values: float(np.nanmean(values))
+    else:
+        raise ValueError(f"Unknown averaging reducer {average_reducer!r}")
+    mask = (times >= t_start) & (times <= t_end)
     if not np.any(mask):
-        mask[-1] = True
+        raise ValueError(f"No diagnostic samples in averaging interval [{t_start}, {t_end}]")
     return {
-        name: float(np.nanmean(np.asarray(values, dtype=float)[mask]))
+        name: reduce(np.asarray(values, dtype=float)[mask])
         for name, values in columns.items()
         if np.asarray(values, dtype=float).ndim == 1
     }, t_start, t_end
@@ -1713,10 +1775,16 @@ def _expand_axis_zero_if_needed(
 
 def cmd_collect(args: argparse.Namespace) -> int:
     manifest = _load_manifest(Path(args.manifest).resolve())
+    try:
+        verify_recorded_provenance(manifest)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot use GKX manifest: {exc}", file=sys.stderr)
+        return 2
+
     runs = manifest["runs"]
     statuses = [completion_status(manifest, run) for run in runs]
     allow_incomplete = bool(getattr(args, "allow_incomplete", False))
-    if int(manifest.get("schema_version", 1)) >= 3 and not allow_incomplete:
+    if not allow_incomplete:
         invalid = [(run, reason) for run, (valid, reason) in zip(runs, statuses) if not valid]
         if invalid:
             for run, reason in invalid:
@@ -1751,7 +1819,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     q_neopax = np.zeros((len(species_names), n), dtype=float)
 
     requested_t_final = args.t_final
-    if requested_t_final is None:
+    if requested_t_final is None and manifest.get("time", {}).get("run_to", "t_max") == "t_max":
         requested_t_final = manifest.get("time", {}).get("t_max")
     requested_t_final = None if requested_t_final is None else float(requested_t_final)
 
@@ -1778,7 +1846,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 average_reducer=str(getattr(args, "average_reducer", "window_mean")),
             )
         except Exception as exc:
-            if int(manifest.get("schema_version", 1)) >= 3 and not allow_incomplete:
+            if not allow_incomplete:
                 print(f"Cannot collect {diag_csv}: {exc}", file=sys.stderr)
                 return 2
             statuses[i] = (False, f"failed to read diagnostics ({exc})")
@@ -2082,12 +2150,15 @@ def cmd_all(args: argparse.Namespace) -> int:
         t_max=args.t_max,
         dt=args.dt,
         method=args.method,
-        use_diffrax=args.use_diffrax,
+        collision_operator=args.collision_operator,
+        run_to=args.run_to,
+        damp_ends_rate=args.damp_ends_rate,
+        saturation_rel_sem=args.saturation_rel_sem,
+        saturation_min_window=args.saturation_min_window,
         fixed_dt=args.fixed_dt,
         sample_stride=args.sample_stride,
         diagnostics_stride=args.diagnostics_stride,
         resolved_diagnostics=args.resolved_diagnostics,
-        chunk_steps=args.chunk_steps,
         cfl=args.cfl,
         state_sharding=args.state_sharding,
         ky=args.ky,
@@ -2108,7 +2179,6 @@ def cmd_all(args: argparse.Namespace) -> int:
         hypercollisions_const=args.hypercollisions_const,
         hypercollisions_kz=args.hypercollisions_kz,
         d_hyper=args.d_hyper,
-        damp_ends_amp=args.damp_ends_amp,
         damp_ends_widthfrac=args.damp_ends_widthfrac,
         hyperdiffusion=args.hyperdiffusion,
         normalization_contract=args.normalization_contract,
@@ -2152,7 +2222,7 @@ def cmd_all(args: argparse.Namespace) -> int:
         neopax_flux_out=str(output_dir / "neopax_fluxes.h5"),
         average_window=args.average_window,
         average_reducer=args.average_reducer,
-        t_final=args.t_max,
+        t_final=None,
         plot=args.plot,
         plot_run_heat_traces=args.plot_run_heat_traces,
         allow_incomplete=bool(args.allow_incomplete),
@@ -2221,7 +2291,11 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--t-final", dest="t_max", type=float, help="Alias for --t-max")
     parser.add_argument("--dt", type=float, default=None)
     parser.add_argument("--method", default=None)
-    parser.add_argument("--use-diffrax", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--collision-operator", choices=("lenard_bernstein", "landau"), default=None)
+    parser.add_argument("--run-to", choices=("t_max", "saturation"), default=None)
+    parser.add_argument("--damp-ends-rate", type=float, default=None)
+    parser.add_argument("--saturation-rel-sem", type=float, default=None)
+    parser.add_argument("--saturation-min-window", type=float, default=None)
     parser.add_argument("--fixed-dt", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--sample-stride", type=int, default=None)
     parser.add_argument("--diagnostics-stride", type=int, default=None)
@@ -2231,7 +2305,6 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Retain the per-chunk resolved kx/ky/z diagnostic spectra in host RAM",
     )
-    parser.add_argument("--chunk-steps", type=int, default=None, help="Adaptive nonlinear chunk size in steps for each GKX run")
     parser.add_argument("--cfl", type=float, default=None)
     parser.add_argument("--state-sharding", default=None)
     parser.add_argument("--ky", type=float, default=None, help="Default nonlinear reference ky retained unless overridden")
@@ -2252,7 +2325,6 @@ def _add_prepare_shaping_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hypercollisions-const", type=float, default=None)
     parser.add_argument("--hypercollisions-kz", type=float, default=None)
     parser.add_argument("--d-hyper", type=float, default=None)
-    parser.add_argument("--damp-ends-amp", type=float, default=None)
     parser.add_argument("--damp-ends-widthfrac", type=float, default=None)
     parser.add_argument("--hyperdiffusion", type=float, default=None)
     parser.add_argument("--normalization-contract", default=None)
@@ -2331,7 +2403,10 @@ def _add_collect_io_args(parser: argparse.ArgumentParser) -> None:
         dest="t_final",
         type=float,
         default=None,
-        help="Final time to average up to; falls back to the manifest t_max",
+        help=(
+            "Averaging endpoint, capped at available data. "
+            "Defaults to the last sample for saturation runs and t_max otherwise."
+        ),
     )
 
 

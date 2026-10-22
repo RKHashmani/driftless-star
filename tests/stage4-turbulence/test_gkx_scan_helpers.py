@@ -25,6 +25,12 @@ from tests.helpers.stage_import import load_stage_module
 
 scan = load_stage_module("stages/stage4-turbulence/gkx_radial_scan.py")
 
+ROOT = Path(__file__).resolve().parents[2]
+TEMPLATES = [
+    ROOT / "inputs/quick_run/HSX_vacuum_ns201_quickrun.toml",
+    *sorted((ROOT / "inputs/w7-x").glob("*/w7x_t3d_reconstruction.toml")),
+]
+
 
 # Flux unit conversion
 
@@ -196,12 +202,23 @@ def _run_collect(tmp_path: Path, runs: list[dict]) -> Path:
         "neopax_result": "",
         "common_config": "",
     }
+    manifest["solver_provenance"] = scan.current_provenance()
+    validity = load_stage_module("stages/stage4-turbulence/run_validity.py")
+    for run in runs:
+        diagnostic = validity.diagnostics_path(run)
+        if diagnostic.exists():
+            config = diagnostic.with_suffix(".toml")
+            config.write_text("[time]\nt_max = 2.0\n")
+            run["config_path"] = str(config)
+            run["input_fingerprint"] = validity.input_fingerprint(manifest, run)
+            validity.certify_completion(manifest, run, run["input_fingerprint"])
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     args = argparse.Namespace(
         manifest=str(manifest_path),
         out=str(tmp_path / "flux_summary.h5"),
         neopax_flux_out=str(tmp_path / "neopax_fluxes.h5"),
+        allow_incomplete=True,
         average_window=5.0,
         t_final=None,
         plot=False,
@@ -416,7 +433,7 @@ def test_cmd_prepare_dispatches_prescribed_source(tmp_path: Path) -> None:
     ])
     assert scan.cmd_prepare(args) == 0
     manifest = json.loads((out_dir / "manifest.json").read_text())
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert "spectrax_root" not in manifest
     assert manifest["profiles_source"] == "prescribed"
     assert not manifest.get("neopax_result")
@@ -450,6 +467,56 @@ def test_t3d_median_estimator_propagates_nan_inside_the_windows() -> None:
 # available reduction, so a trace carrying a real value must not reduce to NaN.
 def test_t3d_median_estimator_single_sample_returns_that_sample() -> None:
     assert_allclose(scan._t3d_median_estimator(np.array([2.5])), 2.5, rtol=1e-12)
+
+
+@pytest.mark.parametrize("reducer", ["window_mean", "t3d_median"])
+@pytest.mark.parametrize("endpoint", [None, 100, 2, -1])
+def test_averaging_caps_endpoint_and_enforces_bounds(reducer: str, endpoint: float | None) -> None:
+    columns = {"t": np.array([0., 1., 2., 3.]), "heat_flux": np.array([0., 2., 4., 100.])}
+    kwargs = dict(average_window=1, t_final_override=endpoint, average_reducer=reducer)
+    if endpoint == -1:
+        with pytest.raises(ValueError, match="No diagnostic samples"):
+            scan._time_average_columns(columns, **kwargs)
+        return
+    row, start, end = scan._time_average_columns(columns, **kwargs)
+    assert end == (2 if endpoint == 2 else 3)
+    mask = columns["t"] <= end
+    if reducer == "window_mean":
+        mask &= columns["t"] >= end - 1
+    values = columns["heat_flux"][mask]
+    expected = np.mean(values) if reducer == "window_mean" else scan._t3d_median_estimator(values)
+    assert row["heat_flux"] == expected
+
+
+def test_sparse_empty_interval_is_rejected() -> None:
+    with pytest.raises(ValueError, match="No diagnostic samples"):
+        scan._time_average_columns({"t": np.array([0., 10.]), "heat_flux": np.array([1., 2.])},
+                                  average_window=1, t_final_override=5, average_reducer="window_mean")
+
+
+@pytest.mark.parametrize("run_to", ["t_max", "saturation"])
+@pytest.mark.parametrize("horizon", [1.5, 100])
+def test_collection_endpoint_follows_stopping_policy(tmp_path: Path, run_to: str, horizon: float) -> None:
+    validity = load_stage_module("stages/stage4-turbulence/run_validity.py")
+    manifest = _prepared_manifest(
+        tmp_path, "--run-to", run_to, "--t-max", str(horizon), "--rho-indices", "1",
+        "--gkx-template", _write_template(tmp_path, ""), "--electron-model", "kinetic",
+        "--rho-star-physical", "0.01",
+    )
+    run = manifest["runs"][0]
+    token = validity.begin_attempt(manifest, run)
+    validity.diagnostics_path(run).write_text(
+        "t,heat_flux,particle_flux,heat_flux_s0,particle_flux_s0\n0,1,2,1,2\n1,3,4,3,4\n2,5,6,5,6\n"
+    )
+    validity.certify_completion(manifest, run, token)
+    args = scan.build_parser().parse_args(["collect", "--manifest", str(tmp_path / "out/manifest.json"),
+        "--out", str(tmp_path / "flux.h5"), "--neopax-flux-out", str(tmp_path / "neopax.h5"),
+        "--average-window", "1", "--no-plot", "--no-plot-run-heat-traces"])
+    assert scan.cmd_collect(args) == 0
+    with h5py.File(args.out) as result:
+        endpoint = min(horizon, 2) if run_to == "t_max" else 2
+        assert result["average_t_end"][0] == endpoint
+        assert result["heat_flux_total"][0] == (3 if endpoint == 1.5 else 4)
 
 
 # Runtime profile gradients
@@ -503,7 +570,7 @@ def _write_template(tmp_path: Path, body: str) -> str:
     return str(path)
 
 
-def _prepared_runtime_toml(tmp_path: Path, *extra_argv: str) -> dict:
+def _prepared_manifest(tmp_path: Path, *extra_argv: str) -> dict:
     from tests.helpers.synthetic import write_wout
 
     config = tmp_path / "common_input.toml"
@@ -519,8 +586,80 @@ def _prepared_runtime_toml(tmp_path: Path, *extra_argv: str) -> dict:
         *extra_argv,
     ])
     assert scan.cmd_prepare(args) == 0
-    manifest = json.loads((out_dir / "manifest.json").read_text())
+    return json.loads((out_dir / "manifest.json").read_text())
+
+
+def _prepared_runtime_toml(tmp_path: Path, *extra_argv: str) -> dict:
+    manifest = _prepared_manifest(tmp_path, *extra_argv)
     return tomllib.loads(Path(manifest["runs"][0]["config_path"]).read_text())
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=lambda path: str(path.relative_to(ROOT)))
+def test_shipped_template_defaults(template: Path) -> None:
+    config = tomllib.loads(template.read_text())
+    assert config["time"]["collision_operator"] == "lenard_bernstein"
+    assert config["time"]["run_to"] == "t_max"
+    assert config["time"]["damp_ends_rate"] == 0.1
+    assert config["output"]["plots"] is False
+
+
+@pytest.mark.parametrize("tier", ["default", "template", "cli"])
+def test_solver_controls_precedence_and_plots(tmp_path: Path, tier: str) -> None:
+    alternate = dict(collision_operator="landau", run_to="saturation", damp_ends_rate=0.2,
+                     saturation_rel_sem=0.12, saturation_min_window=8.0)
+    template = "" if tier == "default" else '[time]\n' + '\n'.join(
+        f'{key} = {json.dumps(value)}' for key, value in alternate.items()
+    )
+    extra = [] if tier != "cli" else ["--collision-operator", "lenard_bernstein", "--run-to", "t_max",
+        "--damp-ends-rate", "0", "--saturation-rel-sem", "0.03", "--saturation-min-window", "4"]
+    manifest = _prepared_manifest(tmp_path, "--gkx-template", _write_template(tmp_path, template), *extra)
+    expected = dict(collision_operator="lenard_bernstein", run_to="t_max", damp_ends_rate=0.1,
+                    saturation_rel_sem=0.05, saturation_min_window=None)
+    if tier == "template":
+        expected = alternate
+    if tier == "cli":
+        expected.update(damp_ends_rate=0, saturation_rel_sem=0.03, saturation_min_window=4)
+    for key, value in expected.items():
+        assert manifest["time"][key] == value
+    runtime = tomllib.loads(Path(manifest["runs"][0]["config_path"]).read_text())
+    for key, value in expected.items():
+        assert runtime["time"].get(key) == value
+    assert runtime["output"]["plots"] is False
+    for removed in ("use_diffrax", "chunk_steps", "damp_ends_amp"):
+        assert removed not in runtime["time"] and removed not in runtime["collisions"]
+
+
+@pytest.mark.parametrize("section", ["time", "collisions"])
+def test_non_table_template_controls_use_bridge_defaults(tmp_path: Path, section: str) -> None:
+    manifest = _prepared_manifest(tmp_path, "--gkx-template", _write_template(tmp_path, f"{section} = 5\n"))
+    assert manifest["time"]["collision_operator"] == "lenard_bernstein"
+    assert manifest["time"]["damp_ends_rate"] == 0.1
+
+
+@pytest.mark.parametrize("section,key,value", [("time", "use_diffrax", "false"),
+    ("time", "chunk_steps", "10"), ("collisions", "damp_ends_amp", "0.1")])
+def test_obsolete_template_keys_fail_before_run_files(tmp_path: Path, section: str, key: str, value: str) -> None:
+    with pytest.raises(ValueError, match=f"Obsolete.*{key}"):
+        _prepared_manifest(tmp_path, "--gkx-template", _write_template(tmp_path, f"[{section}]\n{key} = {value}\n"))
+    assert not list((tmp_path / "out").rglob("*.toml"))
+
+
+@pytest.mark.parametrize("argv", [
+    ("--use-diffrax",), ("--no-use-diffrax",), ("--chunk-steps", "1"), ("--damp-ends-amp", "1"),
+])
+def test_removed_cli_options_fail(argv: tuple[str, ...], capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        scan.build_parser().parse_args(["prepare", *argv])
+    assert error.value.code == 2
+    assert f"unrecognized arguments: {' '.join(argv)}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("key,value", [("damp_ends_rate", -1), ("damp_ends_rate", float("nan")),
+    ("saturation_rel_sem", 0), ("saturation_min_window", -1),
+    ("collision_operator", "unknown"), ("run_to", "unknown")])
+def test_invalid_solver_controls_fail(key: str, value: float | str) -> None:
+    with pytest.raises(ValueError, match=key):
+        scan._solver_controls(argparse.Namespace(), {key: value})
 
 
 # A template that names no [output] table leaves resolved_diagnostics unreachable, so every generated runtime TOML must

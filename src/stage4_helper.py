@@ -17,6 +17,11 @@ RELABEL_CONVENTIONS: tuple[str, ...] = ("boozer_volume",)
 # (config_key, cli_flag) accepted by the `prepare` subcommand; emitted as `<flag> <value>` when set.
 # The config key t_max is spelled --t-final, an accepted alias whose argparse dest is t_max.
 _PREPARE_OPTIONAL_FLAGS: list[tuple[str, str]] = [
+    ("collision_operator", "--collision-operator"),
+    ("run_to", "--run-to"),
+    ("damp_ends_rate", "--damp-ends-rate"),
+    ("saturation_rel_sem", "--saturation-rel-sem"),
+    ("saturation_min_window", "--saturation-min-window"),
     ("beta_source", "--beta-source"),
     ("collisionality_source", "--collisionality-source"),
     ("collisionality_scaling_factor", "--collisionality-scaling-factor"),
@@ -48,7 +53,7 @@ _PREPARE_BOOL_FLAGS: list[tuple[str, str, str]] = [
 
 # Flux averaging and plotting happen in the collect step. Config t_max is deliberately not re-emitted
 # at collect: it reaches the manifest via prepare, and collect's --t-final falls back to the manifest
-# value, keeping a single source of truth for the time window.
+# value for fixed-horizon runs or the last diagnostic sample for saturation runs.
 _COLLECT_OPTIONAL_FLAGS: list[tuple[str, str]] = [
     ("average_window",  "--average-window"),
     ("average_reducer", "--average-reducer"),
