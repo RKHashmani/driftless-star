@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -28,8 +30,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.j_subloop import current_paths
 from src.ouroboros import _write_loop_overrides
 from src.utils import RESOLVED_COMMON_CONFIG, resolve_pipeline_paths
+from stages.common.current_density_feedback_contract import build_record, resolve_settings
 from tests.helpers.runs import W7X_RUNS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,15 +58,18 @@ def _dry_run(
     extra_configfiles: list[str] | None = None,
     printshellcmds: bool = False,
     configfile: str = "inputs/quick_run/config.yaml",
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Plan a run with ``snakemake -n`` and redirect writes to ``tmp_path``.
 
     ``extra_configfiles`` are appended after the base config file under the same single
     ``--configfile`` flag, exactly as the loop driver passes its overrides file, and
     ``printshellcmds`` adds ``-p`` so planned shell commands can be asserted on.
+    ``extra_args`` supplies optional resource and executor settings.
     """
     return subprocess.run(
         ["snakemake", "-n", *(["-p"] if printshellcmds else []), *targets,
+         *(extra_args or []),
          "--configfile", configfile, *(extra_configfiles or []),
          "--workflow-profile", "none",
          "--runtime-source-cache-path", f"{tmp_path}/srccache",
@@ -547,3 +554,154 @@ def test_dkx_response_manifest_schedules_every_sibling(tmp_path: Path) -> None:
     assert output.count("rule stage3_run_one:") == len(surfaces), output
     for surface in surfaces:
         assert f"{surface}/result.json" in output, output
+
+
+def _feedback_config(tmp_path):
+    config = yaml.safe_load((REPO_ROOT / "inputs/quick_run/config.yaml").read_text())
+    config.update(input_dir=str(tmp_path / "input"), output_dir=str(tmp_path / "out"))
+    config["current_density_feedback"] = {"enabled": True}
+    shutil.copytree(REPO_ROOT / "inputs/quick_run", tmp_path / "input")
+    paths = resolve_pipeline_paths(config)
+    context = {"settings": resolve_settings(config), "inputs": {
+        "common_config": paths["s5_config"], "dkx_config": paths["s3_config"],
+        "effective_config": str(tmp_path / "input/effective_config.yaml"),
+    }}
+    context_path = tmp_path / "input/current_density_feedback_context.json"
+    config["current_density_feedback_pass"] = {"context": str(context_path)}
+    Path(context["inputs"]["effective_config"]).write_text(yaml.safe_dump(config))
+    context_path.write_text(json.dumps(context))
+    return config, paths
+
+
+def _feedback_dry_run(tmp_path, config, targets, *, overrides=()):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    profile = yaml.safe_load((REPO_ROOT / "executors/htcondor/profiles/htcondor-gpu/config.yaml").read_text())
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir(exist_ok=True)
+    (profile_dir / "config.yaml").write_text(yaml.safe_dump({
+        key: profile[key] for key in ("default-resources", "set-resources", "set-threads")
+    }))
+    result = _dry_run(
+        tmp_path, targets=targets, config_overrides=list(overrides),
+        configfile=str(config_path), printshellcmds=True,
+        extra_args=["--cores", "8", "--profile", str(profile_dir)],
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
+def _accepted_feedback_pass(tmp_path, config, paths):
+    pass_dir = Path(paths["output_dir"]) / "j_subloop/iter_2"
+    accepted = resolve_pipeline_paths(config, input_dir=str(pass_dir / "input"),
+                                      output_dir=str(pass_dir / "output"))
+    Path(accepted["input_dir"]).mkdir(parents=True)
+    for key in ("s1_input", "s3_config", "s4_config", "s5_config"):
+        shutil.copy2(paths[key], accepted[key])
+    for key in ("s1_output", "s2_output", "s3_output"):
+        path = Path(accepted[key])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(key)
+    outputs = current_paths(accepted["output_dir"])
+    Path(outputs["candidate"]).parent.mkdir(parents=True)
+    Path(outputs["candidate"]).write_text(Path(accepted["s1_input"]).read_text())
+    context_path = str(Path(accepted["input_dir"]) / "current_density_feedback_context.json")
+    context = {"settings": resolve_settings(config), "inputs": {
+        "common_config": accepted["s5_config"], "dkx_config": accepted["s3_config"],
+        "effective_config": str(Path(accepted["input_dir"]) / "effective_config.yaml"),
+    }}
+    Path(context_path).write_text(json.dumps(context))
+    Path(context["inputs"]["effective_config"]).write_text(yaml.safe_dump({
+        **config, "input_dir": accepted["input_dir"], "output_dir": accepted["output_dir"],
+        "current_density_feedback_pass": {"context": context_path},
+    }))
+    record = build_record(status="converged", residual=0.2, threshold=1.0,
+                          measured_s=[.25, 1.0], j_dkx=[0.0, 0.0], j_vmex=[0.0, .2],
+                          settings=resolve_settings(config), paths={
+        "applied_input": accepted["s1_input"], "candidate_input": outputs["candidate"],
+        "wout": accepted["s1_output"], "boozer": accepted["s2_output"], "aggregate": accepted["s3_output"],
+        "context": context_path, **context["inputs"],
+    })
+    Path(outputs["record"]).write_text(json.dumps(record))
+    config.pop("current_density_feedback_pass")
+    config["artifact_reuse"] = {
+        **{key: accepted[key] for key in ("s1_input", "s1_output", "s2_output", "s3_output")},
+        "current_density_feedback_record": outputs["record"],
+    }
+    return accepted, outputs
+
+
+@pytest.mark.parametrize("runtime", ["docker", "apptainer"])
+def test_inner_adapter_target_runs_before_transport_and_uses_cpu(tmp_path, runtime):
+    config, paths = _feedback_config(tmp_path)
+    config.update(gpu_ids="all", container_runtime=runtime)
+    code, output = _feedback_dry_run(tmp_path, config, [current_paths(paths["output_dir"])["record"]])
+    assert code == 0, output
+    for rule in ("stage1_vmex", "stage2_boozer", "stage3_collect", "stage1_current_density_feedback"):
+        assert f"rule {rule}:" in output
+    assert "checkpoint stage3_prepare:" in output
+    assert "stage4_prepare:" not in output
+    assert "stage5_neopax:" not in output
+    block = re.search(r"rule stage1_current_density_feedback:\n(.*?)(?=\n\n|\Z)", output, re.DOTALL)[1]
+    assert "threads: 4" in block
+    assert "request_gpus=0" in block
+    assert "stage-1-vmex-gpu env JAX_PLATFORMS=cpu python " in block
+    assert "--gpus" not in block and "--nv " not in block and "src.gpu_slots" not in block
+
+
+def test_transport_without_evidence_is_rejected_without_blocking_adapter(tmp_path):
+    config, paths = _feedback_config(tmp_path)
+    code, output = _feedback_dry_run(tmp_path, config, [paths["s5_signal"]])
+    assert code != 0
+    assert "Transport requires current convergence evidence" in output
+
+
+@pytest.mark.parametrize("runtime", ["docker", "apptainer"])
+def test_accepted_transport_uses_same_geometry_fluxes_and_pressure_input(tmp_path, runtime):
+    config, paths = _feedback_config(tmp_path)
+    config["container_runtime"] = runtime
+    accepted, outputs = _accepted_feedback_pass(tmp_path, config, paths)
+    code, output = _feedback_dry_run(tmp_path, config, [paths["s5_signal"]])
+    assert code == 0, output
+    for rule in ("stage1_vmex", "stage2_boozer", "stage3_prepare", "stage3_collect", "stage1_current_density_feedback"):
+        assert f"{rule}:" not in output
+    assert "checkpoint stage4_prepare:" in output
+    assert "rule stage5_neopax:" in output
+    assert "fit_vmec_pressure_from_transport_h5.py" in output
+    assert "Pressure export skipped" not in output
+    stage5 = output.split("rule stage5_neopax:", 1)[1].split("output:", 1)[0]
+    for key in ("s1_output", "s2_output", "s3_output", "s1_input"):
+        assert accepted[key] in stage5
+    assert paths["s3_config"] != accepted["s3_config"]
+    assert paths["s3_config"] in stage5
+    assert outputs["record"] in stage5 and outputs["candidate"] in stage5
+    stage4 = output.split("checkpoint stage4_prepare:", 1)[1].split("output:", 1)[0]
+    assert accepted["s1_output"] in stage4 and accepted["s2_output"] in stage4
+    post = output.split("rule stage5_post_processing:", 1)[1].split("output:", 1)[0]
+    assert accepted["s1_input"] in post
+    resolved = tomllib.loads(Path(paths["s5_resolved_config"]).read_text())
+    assert resolved["neoclassical"]["neoclassical_file"] == os.path.relpath(accepted["s3_output"], paths["stage5_dir"])
+    for key, artifact in (("vmec_file", "s1_output"), ("boozer_file", "s2_output")):
+        assert resolved["geometry"][key] == os.path.relpath(accepted[artifact], paths["stage5_dir"])
+    if runtime == "apptainer":
+        assert set(re.findall(r'--bind "([^"]+)"', output)) == {
+            "$PWD:/work", *(f"{paths[key]}:{paths[key]}" for key in ("input_dir", "output_dir")),
+        }
+
+
+@pytest.mark.parametrize("gpu_ids", ["null", "0"])
+def test_transport_compares_gpu_settings_after_snakemake_cli_parsing(tmp_path, gpu_ids):
+    config, paths = _feedback_config(tmp_path)
+    config["gpu_ids"] = None if gpu_ids == "null" else "0"
+    _accepted_feedback_pass(tmp_path, config, paths)
+    code, output = _feedback_dry_run(tmp_path, config, [paths["s5_signal"]], overrides=[f"gpu_ids={gpu_ids}"])
+    assert code == 0, output
+    assert "rule stage5_neopax:" in output
+
+
+def test_stale_evidence_rejects_transport(tmp_path):
+    config, paths = _feedback_config(tmp_path)
+    accepted, _ = _accepted_feedback_pass(tmp_path, config, paths)
+    Path(accepted["s1_output"]).write_text("changed equilibrium")
+    code, output = _feedback_dry_run(tmp_path, config, [paths["s5_signal"]])
+    assert code != 0
+    assert "Stale current density feedback artifact wout" in output

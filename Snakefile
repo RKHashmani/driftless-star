@@ -7,6 +7,8 @@ from pathlib import Path
 from snakemake.logging import logger
 
 from src import stage3_helper, stage4_helper, stage5_helper
+from src.j_subloop import convergence_inputs, current_paths, resolve_artifact_reuse
+from stages.common.current_density_feedback_contract import resolve_settings
 from src.utils.loop import pressure_feedback_command
 from src.utils import (
     resolve_common_config_path,
@@ -46,6 +48,8 @@ DEVICE = GPU.device
 # Freezing a stage means reading its artifacts from an earlier pass, which takes an address from loop.reuse_output_dir.
 # A plain forward pass and the loop's first iteration run every enabled stage.
 RERUN = resolve_rerun_flags(config, enabled=ENABLED)
+CURRENT_SETTINGS = resolve_settings(config, enabled=ENABLED, rerun=RERUN)
+ARTIFACT_REUSE = resolve_artifact_reuse(config)
 PRESSURE_FEEDBACK_COMMAND = pressure_feedback_command(config, RERUN)
 REUSE_OUTPUT_DIR = (config.get("loop") or {}).get("reuse_output_dir")
 if REUSE_OUTPUT_DIR is None:
@@ -174,6 +178,15 @@ if REUSE_OUTPUT_DIR is not None:
     if ENABLED["stage4"] and not RERUN["stage4"]:
         S4_OUTPUT = P_REUSE["s4_output"]
 
+PRODUCE = dict(RERUN)
+if ARTIFACT_REUSE:
+    S1_INPUT = ARTIFACT_REUSE["s1_input"]
+    S1_OUTPUT = ARTIFACT_REUSE["s1_output"]
+    S2_OUTPUT = ARTIFACT_REUSE["s2_output"]
+    S3_OUTPUT = ARTIFACT_REUSE["s3_output"]
+    for stage in ("stage1", "stage2", "stage3"):
+        PRODUCE[stage] = False
+
 # Stage 5 post-processing convergence criterion (see the `convergence` block in inputs/<run>/config.yaml).
 PRESSURE_CONVERGENCE_METHOD = stage5_helper.resolve_pressure_convergence_method(config)
 PRESSURE_REL_TOL = config.get("convergence", {}).get("pressure_rel_tol", 1.0e-2)
@@ -196,7 +209,7 @@ rule all:
         S5_OUTPUT,
 
 # A frozen stage's rules are omitted from the workflow, so its reuse-tree artifacts cannot be rebuilt or overwritten.
-if RERUN["stage1"]:
+if PRODUCE["stage1"]:
     rule stage1_vmex:
         input:  S1_INPUT
         output: S1_OUTPUT
@@ -206,7 +219,7 @@ if RERUN["stage1"]:
             f"python stages/stage1-equilibrium/run_vmex.py --input {{input}} --output {{output}} --device {DEVICE}"
             " 2>&1 | tee {log}"
 
-if RERUN["stage2"]:
+if PRODUCE["stage2"]:
     rule stage2_boozer:
         input:  S1_OUTPUT
         output: S2_OUTPUT
@@ -222,7 +235,7 @@ if RERUN["stage2"]:
 # In Stages 3 and 4, fd_gradients adds sibling runs such as rho_012_r0p4898_fd_n_D.
 SURF_PATTERN = r"rho_\d+_r[0-9p]+(?:_fd_[nt]_\w+)?"
 
-if ENABLED["stage3"] and RERUN["stage3"]:
+if ENABLED["stage3"] and PRODUCE["stage3"]:
     checkpoint stage3_prepare:
         input:
             config_file = S3_CONFIG,
@@ -286,7 +299,38 @@ if ENABLED["stage3"] and RERUN["stage3"]:
                 output_file=S3_OUTPUT,
             ) + " 2>&1 | tee {log}"
 
-if ENABLED["stage4"] and RERUN["stage4"]:
+if CURRENT_SETTINGS["enabled"] and not ARTIFACT_REUSE:
+    CURRENT_OUTPUTS = current_paths(P["output_dir"])
+    CURRENT_PASS = config.get("current_density_feedback_pass") or {}
+    CURRENT_CONTEXT = CURRENT_PASS.get("context", f"{P['input_dir']}/current_density_feedback_context.json")
+
+    rule stage1_current_density_feedback:
+        input:
+            aggregate = S3_OUTPUT,
+            wout = S1_OUTPUT,
+            boozer = S2_OUTPUT,
+            applied = S1_INPUT,
+            settings = CURRENT_CONTEXT,
+            common_config = S5_CONFIG,
+            dkx_config = S3_CONFIG,
+            effective_config = f"{P['input_dir']}/effective_config.yaml",
+        output:
+            candidate = CURRENT_OUTPUTS["candidate"],
+            record = CURRENT_OUTPUTS["record"],
+        threads: 4
+        resources:
+            request_gpus = "0",
+        log:
+            f"{P['output_dir']}/current_density_feedback/adapter.log"
+        shell:
+            f"{CONTAINER_PREFIX_CPU}{container_image_location(STAGE1_IMG)} "
+            "env JAX_PLATFORMS=cpu python stages/stage1-equilibrium/current_density_feedback.py "
+            "--aggregate {input.aggregate:q} --wout {input.wout:q} --boozer {input.boozer:q} "
+            "--input {input.applied:q} --settings {input.settings:q} "
+            "--candidate {output.candidate:q} --record {output.record:q} "
+            "2>&1 | tee {log:q}"
+
+if ENABLED["stage4"] and PRODUCE["stage4"]:
     checkpoint stage4_prepare:
         input:
             config_file = S4_CONFIG,
@@ -378,6 +422,7 @@ if ENABLED["stage4"] and RERUN["stage4"]:
 
 rule stage5_neopax:
     input:
+        current_convergence = lambda wildcards: convergence_inputs(config, ARTIFACT_REUSE),
         config_file = S5_CONFIG,
         wout    = S1_OUTPUT,
         boozer  = S2_OUTPUT,

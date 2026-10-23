@@ -31,6 +31,8 @@ from pathlib import Path
 
 import yaml
 
+from .j_subloop import merge_config, run_j_subloop, write_if_changed
+from stages.common.current_density_feedback_contract import resolve_settings
 from .signal_contract import validate_signal
 from .stage5_helper import read_rho_edge
 from .utils import (
@@ -292,6 +294,12 @@ def main() -> None:
     common_config = _abs(repo_root, resolve_common_config_path(config))
     enabled = resolve_enabled_stages(common_config)
     rerun = resolve_rerun_flags(config, enabled=enabled)
+    current_settings = resolve_settings(config, enabled=enabled, rerun=rerun)
+    if "artifact_reuse" in config or "current_density_feedback_pass" in config:
+        raise ValueError(
+            "artifact_reuse and current_density_feedback_pass are written by the driver "
+            "and must not appear in the run config"
+        )
     for stage in ("stage3", "stage4"):
         if not enabled[stage]:
             logger.info("Stage %s is skipped because its shared flux_model is none.", stage.removeprefix("stage"))
@@ -361,8 +369,21 @@ def main() -> None:
             iter_input_dir, rerun=rerun, reuse_output_dir=reuse_output_dir, enabled=enabled
         )
         extra_configfiles = [overrides] if overrides is not None else None
+        pass_config_path = config_path
+        if current_settings["enabled"]:
+            merged = merge_config(effective, yaml.safe_load(overrides.read_text()) if overrides else {})
+            merged.update(input_dir=iter_in, output_dir=iter_out)
+            accepted = run_j_subloop(
+                config=merged, outer_paths=iter_p, enabled=enabled, rerun=rerun, repo_root=repo_root,
+                run_forward_pass=run_forward_pass, cores=args.cores, extra_config=config_overrides or None,
+                profile=args.profile, htcondor_jobdir=args.htcondor_jobdir,
+            )
+            merged["artifact_reuse"] = accepted
+            pass_config_path = iter_input_dir / "current_transport_config.yaml"
+            write_if_changed(pass_config_path, yaml.safe_dump(merged, sort_keys=True))
+            extra_configfiles = None
         run_forward_pass(target=iter_p["s5_signal"], input_dir=iter_in, output_dir=iter_out,
-                         cores=args.cores, config_path=config_path, repo_root=repo_root,
+                         cores=args.cores, config_path=pass_config_path, repo_root=repo_root,
                          extra_configfiles=extra_configfiles, extra_config=config_overrides or None,
                          profile=args.profile, htcondor_jobdir=args.htcondor_jobdir)
 

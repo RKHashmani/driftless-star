@@ -35,6 +35,8 @@ default-resources:
   classad_is_resumable: true
 
 set-resources:
+  stage1_current_density_feedback:
+    request_gpus: "0"
   stage3_prepare:
     request_gpus: "0"
   stage3_collect:
@@ -50,6 +52,7 @@ set-resources:
     request_gpus: "0"
 
 set-threads:
+  stage1_current_density_feedback: 4
   stage1_vmex: 4
   stage2_boozer: 4
   stage3_prepare: 4
