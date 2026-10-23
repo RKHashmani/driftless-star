@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from .signal_contract import ContractError, _raise_if
+from stages.common.dkx_current import CURRENT_FIELDS, check_current
 
 
 def _require(arr: np.ndarray | None, name: str, problems: list[str]) -> bool:
@@ -352,12 +353,17 @@ def validate_transport_solution(path: Path | str) -> None:
 
 # dkx_flux_profiles.h5 ------------------------------------------------------------
 
-_DKX_FIELDS = ("r", "rHat", "rho", "Gamma", "Q", "Upar", "species_names")
+_DKX_FIELDS = ("r", "rHat", "rho", "Gamma", "Q", "Upar", "species_names") + tuple(
+    f"current/{key}" for key in CURRENT_FIELDS
+)
 
 
 def _check_dkx_flux(data: dict[str, np.ndarray | None], attrs: dict[str, Any]) -> list[str]:
-    """Check Stage 3 neoclassical profiles against the radius grid NEOPAX reads."""
-    problems: list[str] = []
+    """Check Stage 3 flux profiles and native current samples."""
+    problems = check_current(
+        {key: data.get(f"current/{key}") for key in CURRENT_FIELDS},
+        attrs.get("current", {}), wout_sha256=attrs.get("wout_sha256", ""),
+    )
 
     n_radii = _check_rho(data.get("rho"), problems)
     if n_radii is not None and n_radii < 2:
@@ -386,6 +392,10 @@ def _check_dkx_flux(data: dict[str, np.ndarray | None], attrs: dict[str, Any]) -
             _check_flux_2d(arr, name, n_species, n_radii, problems)
 
     padded = attrs.get("axis_zero_padded")
+    current_s = data.get("current/s")
+    if isinstance(padded, (bool, np.bool_)) and n_radii is not None and current_s is not None and current_s.ndim == 1:
+        if current_s.size != n_radii - int(padded):
+            problems.append("current samples must match baseline surfaces without synthetic flux-axis padding")
     if "axis_zero_padded" not in attrs:
         problems.append("missing required root attribute 'axis_zero_padded'")
     elif not isinstance(padded, (bool, np.bool_)):
@@ -416,6 +426,7 @@ def validate_dkx_flux(path: Path | str) -> None:
     with h5py.File(path, "r") as f:
         data = {k: (np.asarray(f[k][()]) if k in f else None) for k in _DKX_FIELDS}
         attrs = dict(f.attrs)
+        attrs["current"] = dict(f["current"].attrs) if "current" in f else {}
     _raise_if(_check_dkx_flux(data, attrs), f"{path} violates the dkx_flux_profiles.h5 contract")
 
 

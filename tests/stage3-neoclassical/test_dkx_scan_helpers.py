@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import re
 import json
+import os
+import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -200,7 +202,13 @@ def _prepared_scan(tmp_path: Path):
 
 
 def _summary(payload: dict) -> dict:
+    native = _native_diagnostics()
+    native["psiN"] = payload["rho"]**2
+    native["rN"] = payload["rho"]
+    current = scan._extract_current(native, 3)
+    current["meta"]["wout_sha256"] = payload["wout_sha256"] or ""
     return {
+        "current": current,
         "solver": payload["solver"], "wout_sha256": payload["wout_sha256"],
         "radius_index": payload["radius_index"], "rho": payload["rho"],
         "rHat": payload["rho"] * 0.8,
@@ -218,7 +226,7 @@ def _complete(pending: list[Path]) -> list[Path]:
     return results
 
 
-@pytest.mark.parametrize("change", [None, "malformed", "solver", "equilibrium", "namelist", "radius"])
+@pytest.mark.parametrize("change", [None, "malformed", "solver", "equilibrium", "namelist", "radius", "legacy_current"])
 def test_prepare_reuses_only_matching_results(tmp_path: Path, monkeypatch, change) -> None:
     args, _, pending = _prepared_scan(tmp_path)
     results = _complete(pending)
@@ -226,6 +234,11 @@ def test_prepare_reuses_only_matching_results(tmp_path: Path, monkeypatch, chang
         for path in results:
             summary = json.loads(path.read_text())
             del summary["solver"]
+            path.write_text(json.dumps(summary))
+    elif change == "legacy_current":
+        for path in results:
+            summary = json.loads(path.read_text())
+            del summary["current"]
             path.write_text(json.dumps(summary))
     elif change == "solver":
         monkeypatch.setattr(scan, "_solver_identity", lambda: {**SOLVER, "revision": "new-revision"})
@@ -282,6 +295,8 @@ def _native_diagnostics() -> dict:
         "heatFlux_vm_rHat": np.array([[4, 40], [5, 50], [6, 60]]),
         "FSABFlow": np.array([[7, 70], [8, 80], [9, 90]]),
         "rHat": 0.16, "B0OverBBar": 2.0,
+        "FSABjHat": np.array([10., 100.]), "FSABHat2": 4., "Zs": [-1., 1., 1.],
+        "psiN": 0.04, "rN": 0.2, "NIterations": 2,
     }
 
 
@@ -658,7 +673,10 @@ def test_linear_flux_model_recovers_pressure_preserving_slopes(
             / scan.SFINCS_GAMMA_TO_NEOPAX,
             "heatFlux_vm_rHat": (2 * density_coeff @ kappa_n + 3 * temperature_coeff @ kappa_t - 4)
             / scan.SFINCS_Q_TO_NEOPAX,
-            "FSABFlow": np.ones(3),
+            "FSABFlow": np.ones((3, 1)),
+            "FSABjHat": [1.], "FSABHat2": 1., "Zs": [-1., 1., 1.], "NIterations": 1,
+            "rN": float(_namelist_values(text, "rN_wish")[0]),
+            "psiN": float(_namelist_values(text, "rN_wish")[0]) ** 2,
             "rHat": float(_namelist_values(text, "rN_wish")[0]) * 0.8,
             "B0OverBBar": 1.0,
         }
@@ -685,3 +703,148 @@ def test_linear_flux_model_recovers_pressure_preserving_slopes(
                 slope = (output[f"{flux}_perturbed"][pi][:, present] - output[flux][:, present]) / delta
                 expected = a[:, si] - b[:, si] if channel == "density_gradient" else b[:, si]
                 assert_allclose(slope, np.repeat(expected[:, None], present.sum(), axis=1), atol=1e-12)
+
+
+def test_current_uses_final_accepted_signed_diagnostic_and_magnetic_average() -> None:
+    native = _native_diagnostics()
+    native["FSABjHat"] = [np.nan, -100.]
+    native["FSABFlow"] = np.array([[np.inf, -70], [np.nan, -80], [np.nan, -90]])
+    native["B0OverBBar"] = 3.0
+    native["FSABHat2"] = 10.0
+    current = scan._extract_current(native, 3)
+    assert current["accepted_iteration"] == 2
+    assert current["JdotB"] == -100 * scan.CURRENT_NORMALIZATION["JdotB_scale_to_SI"]
+    assert current["B2"] == 10.0
+    assert current["J"] == current["JdotB"] / np.sqrt(10.)
+    assert current["s"] == 0.04
+    assert current["rho"] == 0.2
+
+
+@pytest.mark.parametrize("key, value", [
+    ("FSABjHat", [10., 99.]), ("FSABjHat", [10., np.inf]),
+    ("FSABHat2", 0.), ("FSABHat2", -1.), ("FSABHat2", np.nan),
+    ("NIterations", 0), ("NIterations", 3), ("NIterations", 1.5),
+    ("FSABFlow", np.zeros((3, 3))),
+])
+def test_current_rejects_inconsistent_native_values(key, value) -> None:
+    native = _native_diagnostics()
+    native[key] = value
+    with pytest.raises(ValueError):
+        scan._extract_current(native, 3)
+
+
+def test_current_species_closure_handles_cancellation() -> None:
+    native = _native_diagnostics()
+    native["FSABFlow"][:, -1] = [10, 5, 5]
+    native["FSABjHat"][-1] = 0
+    assert scan._extract_current(native, 3)["J"] == 0
+
+
+def test_current_collection_uses_native_baselines_without_axis_padding(tmp_path: Path) -> None:
+    args, manifest, pending = _prepared_responses(tmp_path)
+    results = _complete(pending)
+    native_rho = []
+    for run, path in zip(manifest["runs"], results):
+        summary = json.loads(path.read_text())
+        summary["current"]["rho"] *= 0.98
+        summary["current"]["s"] = summary["current"]["rho"]**2
+        if run["response_label"] == "base":
+            native_rho.append(summary["current"]["rho"])
+        else:
+            summary["current"]["JdotB"] *= 100
+            summary["current"]["J"] *= 100
+        path.write_text(json.dumps(summary))
+    collected = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    scan._collect(collected, manifest)
+    with h5py.File(Path(args.output_dir) / "dkx_flux_profiles.h5") as f:
+        assert f.attrs["axis_zero_padded"]
+        assert len(f["current/s"]) == len(native_rho)
+        assert_allclose(f["current/rho"][:], native_rho)
+        assert_allclose(f["current/s"][:], np.square(native_rho))
+        assert_allclose(f["current/JdotB"][:], 100 * scan.CURRENT_NORMALIZATION["JdotB_scale_to_SI"])
+        assert f["current"].attrs["wout_sha256"] == manifest["wout_sha256"]
+        assert f["rho"][0] == 0
+        assert f["current/rho"][0] > 0
+
+
+@pytest.mark.parametrize("problem", ["legacy", "coordinate", "order", "normalization", "provenance", "current_nan"])
+def test_invalid_current_collection_preserves_valid_aggregate(tmp_path: Path, problem: str) -> None:
+    args, manifest, pending = _prepared_scan(tmp_path)
+    results = _complete(pending)
+    collected = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    scan._collect(collected, manifest)
+    path = Path(args.output_dir) / "dkx_flux_profiles.h5"
+    before = path.read_bytes()
+    summary = json.loads(results[-1].read_text())
+    if problem == "legacy":
+        del summary["current"]
+    elif problem == "coordinate":
+        summary["current"]["s"] *= 0.9
+    elif problem == "order":
+        summary["current"]["s"] = summary["current"]["rho"] = 0.
+    elif problem == "normalization":
+        summary["current"]["meta"]["JdotB_scale_to_SI"] *= 2.
+    elif problem == "provenance":
+        summary["current"]["meta"]["wout_sha256"] = "wrong equilibrium"
+    else:
+        summary["current"]["J"] = float("nan")
+    results[-1].write_text(json.dumps(summary))
+    with pytest.raises(ValueError):
+        scan._collect(collected, manifest)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("umask, existing_mode", [(0o022, None), (0o007, None), (0o077, 0o640), (0o022, 0o660)])
+def test_collect_publication_uses_umask_and_preserves_existing_permissions(
+    tmp_path: Path, umask: int, existing_mode: int | None,
+) -> None:
+    args, manifest, pending = _prepared_scan(tmp_path)
+    _complete(pending)
+    destination = Path(args.output_dir) / "dkx_flux_profiles.h5"
+    if existing_mode is not None:
+        destination.write_bytes(b"previous aggregate")
+        destination.chmod(existing_mode)
+    collected = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    previous_umask = os.umask(umask)
+    try:
+        scan._collect(collected, manifest)
+    finally:
+        os.umask(previous_umask)
+    expected = 0o666 & ~umask if existing_mode is None else existing_mode
+    assert stat.S_IMODE(destination.stat().st_mode) == expected
+    validate_dkx_flux(destination)
+    assert not list(destination.parent.glob(f".{destination.name}.*"))
+
+
+def test_collect_write_failure_preserves_aggregate_contents_and_permissions(tmp_path: Path, monkeypatch) -> None:
+    args, manifest, pending = _prepared_scan(tmp_path)
+    _complete(pending)
+    collected = scan.build_parser().parse_args(["collect", "--output-dir", args.output_dir, "--no-plot"])
+    scan._collect(collected, manifest)
+    destination = Path(args.output_dir) / "dkx_flux_profiles.h5"
+    destination.chmod(0o640)
+    before = destination.read_bytes()
+    create_dataset = h5py.Group.create_dataset
+
+    def fail_during_write(group, name, *arguments, **keywords):
+        if name == "Gamma":
+            raise OSError("simulated HDF5 write failure")
+        return create_dataset(group, name, *arguments, **keywords)
+
+    monkeypatch.setattr(h5py.Group, "create_dataset", fail_during_write)
+    with pytest.raises(OSError, match="simulated HDF5 write failure"):
+        scan._collect(collected, manifest)
+    assert destination.read_bytes() == before
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o640
+    assert not list(destination.parent.glob(f".{destination.name}.*"))
+
+
+def test_converged_phi1_current_uses_final_accepted_newton_iteration() -> None:
+    native = _native_diagnostics()
+    native["didNonlinearCalculationConverge"] = 1
+    native["NIterations"] = 3
+    native["FSABFlow"] = np.array([[1., 70., -7.], [2., 80., -8.], [3., 90., -9.]])
+    native["FSABjHat"] = np.array([4., 100., -10.])
+    current = scan._extract_current(native, 3)
+    assert current["accepted_iteration"] == 3
+    assert current["JdotB"] == -10 * scan.CURRENT_NORMALIZATION["JdotB_scale_to_SI"]

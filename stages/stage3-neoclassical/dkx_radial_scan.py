@@ -45,6 +45,10 @@ from typing import Any
 
 import h5py
 import numpy as np
+from common.atomic_output import atomic_output_path
+from common.dkx_current import (
+    CURRENT_CONTRACT_VERSION, CURRENT_FIELDS, CURRENT_NORMALIZATION, CURRENT_UNITS, check_current,
+)
 from common.neopax_geometry import read_neopax_minor_radius
 from common.neopax_profiles import (
     NEOPAX_DENSITY_REFERENCE_M3,
@@ -546,6 +550,46 @@ def _extract_flux_triplet(
     return gamma, q, upar, r_hat, meta
 
 
+
+def _extract_current(results: dict[str, Any], n_species: int) -> dict[str, Any]:
+    """Convert the final accepted DKX current to SI on its native sampled surface."""
+    required = ("FSABjHat", "FSABHat2", "FSABFlow", "Zs", "psiN", "rN", "NIterations")
+    missing = [key for key in required if key not in results]
+    if missing:
+        raise KeyError(f"DKX output is missing required current diagnostics {missing}.")
+    iterations = _last_scalar(results["NIterations"])
+    if iterations < 1 or int(iterations) != iterations:
+        raise ValueError("DKX current requires at least one accepted iteration.")
+    current = np.atleast_1d(np.asarray(results["FSABjHat"], dtype=float))
+    flow = np.asarray(results["FSABFlow"], dtype=float)
+    if iterations == 1 and flow.shape == (n_species,):
+        flow = flow[:, None]
+    if current.shape != (int(iterations),) or flow.shape != (n_species, int(iterations)):
+        raise ValueError("DKX current and species flow must share the accepted NIterations axis.")
+    j_hat = _last_scalar(current[-1])
+    charges = _last_species_vector(results["Zs"], n_species)
+    species_current = charges * _last_species_vector(flow, n_species)
+    closure_scale = max(float(np.sum(np.abs(species_current))), abs(j_hat))
+    if abs(float(np.sum(species_current)) - j_hat) > 1e-12 * closure_scale:
+        raise ValueError("DKX final current does not close against the species flows.")
+    b2 = _last_scalar(results["FSABHat2"]) * CURRENT_NORMALIZATION["B2_scale_to_SI"]
+    if b2 <= 0:
+        raise ValueError("DKX FSABHat2 must be positive.")
+    jdotb = j_hat * CURRENT_NORMALIZATION["JdotB_scale_to_SI"]
+    return {
+        "s": _last_scalar(results["psiN"]), "rho": _last_scalar(results["rN"]),
+        "JdotB": jdotb, "B2": b2, "J": jdotb / np.sqrt(b2),
+        "accepted_iteration": int(iterations),
+        "meta": {
+            "contract_version": CURRENT_CONTRACT_VERSION,
+            "s_source": "psiN", "rho_source": "rN",
+            "JdotB_source": "FSABjHat", "B2_source": "FSABHat2",
+            "J_definition": "JdotB/sqrt(B2)",
+            **{f"{key}_units": value for key, value in CURRENT_UNITS.items()},
+            **CURRENT_NORMALIZATION,
+        },
+    }
+
 def _build_worker_env(args: argparse.Namespace, *, gpu_id: str | None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -617,6 +661,12 @@ def _wout_digest(path: Path | None) -> str | None:
 
 def _validate_summary(summary: dict[str, Any], expected: dict[str, Any]) -> None:
     """Check one completion record against its prepared surface."""
+    current = summary.get("current") if isinstance(summary, dict) else None
+    meta = current.get("meta") if isinstance(current, dict) else None
+    if not isinstance(meta, dict) or meta.get("contract_version") != CURRENT_CONTRACT_VERSION:
+        raise ValueError(
+            "DKX current contract is missing or incompatible. Regenerate Stage 3 with prepare and run-one."
+        )
     for key in ("solver", "wout_sha256", "radius_index", "rho"):
         if key not in summary or summary[key] != expected[key]:
             raise ValueError(f"DKX result has a mismatched {key}. Run prepare and solve the surface again.")
@@ -628,6 +678,17 @@ def _validate_summary(summary: dict[str, Any], expected: dict[str, Any]) -> None
         values = np.asarray(summary[key], dtype=float)
         if values.shape != (expected["n_species"],) or not np.all(np.isfinite(values)):
             raise ValueError(f"DKX result {key} must contain one finite value per species.")
+
+    current = summary["current"]
+    problems = check_current(
+        {key: [current.get(key)] if current.get(key) is not None else None for key in CURRENT_FIELDS},
+        current["meta"], wout_sha256=summary["wout_sha256"] or "",
+    )
+    iteration = current.get("accepted_iteration")
+    if not isinstance(iteration, int) or isinstance(iteration, bool) or iteration < 1:
+        problems.append("DKX current requires a positive accepted_iteration")
+    if problems:
+        raise ValueError("Invalid DKX current. " + ". ".join(problems))
 
 
 def _run_single_worker_from_payload(payload_path: Path) -> int:
@@ -665,7 +726,10 @@ def _run_single_worker_from_payload(payload_path: Path) -> int:
         elapsed_s.append(time.perf_counter() - t0)
     results = read_output(output_path)
     gamma, q, upar, r_hat, meta = _extract_flux_triplet(results, n_species)
+    current = _extract_current(results, n_species)
+    current["meta"]["wout_sha256"] = payload["wout_sha256"] or ""
     summary = {
+        "current": current,
         "solver": payload["solver"],
         "wout_sha256": payload["wout_sha256"],
         "radius_index": int(payload["radius_index"]),
@@ -1267,6 +1331,7 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
     benchmark_rows: list[dict[str, Any]] = []
     responses = {}
     baseline_runs = []
+    current_samples = []
     for run in sorted(manifest["runs"], key=lambda r: r["rho"]):
         result_json = run_dir / run["run_subdir"] / run["result_json"]
         if not result_json.exists():
@@ -1286,6 +1351,7 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
             responses[identity] = {**summary, "perturb_delta": run["perturb_delta"]}
             continue
         baseline_runs.append(run)
+        current_samples.append(summary["current"])
         rho_out.append(float(summary["rho"]))
         rhat_value = summary.get("rHat")
         if rhat_value is None:
@@ -1304,6 +1370,15 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
                 }
             )
 
+    if not baseline_runs:
+        raise ValueError("The DKX manifest has no baseline current surfaces.")
+    current_data = {key: np.asarray([row[key] for row in current_samples]) for key in CURRENT_FIELDS}
+    current_meta = current_samples[0]["meta"]
+    if any(row["meta"] != current_meta for row in current_samples):
+        raise ValueError("DKX current normalization differs across baseline surfaces.")
+    problems = check_current(current_data, current_meta, wout_sha256=manifest["wout_sha256"] or "")
+    if problems:
+        raise ValueError("Invalid DKX current collection. " + ". ".join(problems))
     rho_arr = np.asarray(rho_out, dtype=np.float64)
     rhat_arr = np.asarray(rhat_out, dtype=np.float64)
     gamma_arr = np.stack(gamma_out, axis=1)
@@ -1327,78 +1402,86 @@ def _collect(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
     time_value = manifest["time_value"]
     include_phi1 = manifest["include_phi1"]
     out_h5 = Path(args.output).resolve() if args.output else output_dir / "dkx_flux_profiles.h5"
-    out_h5.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(out_h5, "w") as f:
-        f.create_dataset("r", data=rhat_arr)
-        f.create_dataset("rHat", data=rhat_arr)
-        f.create_dataset("rho", data=rho_arr)
-        f.create_dataset("Gamma", data=gamma_arr)
-        f.create_dataset("Q", data=q_arr)
-        f.create_dataset("Upar", data=upar_arr)
-        for key, values in response_data.items():
-            if key in ("response_label", "perturb_species"):
-                f.create_dataset(key, data=values, dtype=h5py.string_dtype("utf-8"))
-            else:
-                f.create_dataset(key, data=values)
-        if response_data:
-            f.attrs["response_note"] = (
-                "kappa=-d(log profile)/d(rho). Density steps preserve the pressure gradient. "
-                "Use (F_perturbed-F_base)/perturb_delta where perturb_present is true."
+    with atomic_output_path(out_h5) as temporary_path:
+        with h5py.File(temporary_path, "w") as f:
+            current_group = f.create_group("current")
+            for key, values in current_data.items():
+                current_group.create_dataset(key, data=values)
+            current_group.create_dataset(
+                "accepted_iteration", data=[row["accepted_iteration"] for row in current_samples],
             )
-        f.create_dataset("species_names", data=np.asarray([sp.name.encode("utf-8") for sp in species]))
-        f.attrs["profiles_source"] = str(manifest["profiles_source"])
-        f.attrs["source_transport_solution"] = (
-            "" if manifest["source_transport_solution"] is None else str(manifest["source_transport_solution"])
-        )
-        f.attrs["source_dkx_template"] = str(manifest["source_dkx_template"])
-        f.attrs["time_index"] = int(manifest["time_index"])
-        f.attrs["time_value"] = np.nan if time_value is None else float(time_value)
-        f.attrs["backend"] = str(manifest["backend"])
-        f.attrs["max_parallel"] = int(manifest["max_parallel"])
-        for key, value in manifest["solver"].items():
-            f.attrs[f"solver_{key}"] = value
-        f.attrs["wout_sha256"] = manifest["wout_sha256"] or ""
-        f.attrs["include_phi1"] = bool(include_phi1) if include_phi1 is not None else -1
-        f.attrs["axis_zero_padded"] = bool(axis_padded)
-        for key in (
-            "Gamma_key", "Q_key", "Upar_key",
-            "Gamma_scale_to_neopax", "Q_scale_to_neopax", "Upar_bridge",
-        ):
-            value = raw_meta.get(key)
-            if value is not None:
-                f.attrs[f"raw_{key}"] = str(value)
-        f.attrs["Upar_note"] = (
-            "Upar is derived from dkx FSABFlow using the NTX fixed-field "
-            "parallel-flow bridge factor 2*B0OverBBar/sqrt(pi)."
-        )
-        f.attrs["normalization_note"] = (
-            "Gamma is converted from dkx particleFlux_vm_* using nbar*vbar/Rbar "
-            "with nbar=1e20 m^-3, Tbar=1 keV, mbar=mp, Rbar=1 m. "
-            "Q is converted from heatFlux_vm_* using (nbar*mbar*vbar^3/Rbar)/e so the written "
-            "values match NEOPAX's eV-based physical heat-flux convention. "
-            "Upar uses the NTX archive-backed observable bridge rather than a raw FSABFlow alias."
-        )
-        f.attrs["radius_note"] = (
-            "The saved coordinate r/rHat uses dkx's rHat output. "
-            "rho is also saved separately from the source NEOPAX transport file."
-        )
-        if benchmark_rows:
-            f.attrs["benchmark_note"] = (
-                "Timing benchmark mode was enabled. cold_run_s includes first-run JAX startup/compile effects; "
-                "warm_* fields are repeated same-process timings after the configured warmup runs."
+            for key, value in current_meta.items():
+                current_group.attrs[key] = value
+            f.create_dataset("r", data=rhat_arr)
+            f.create_dataset("rHat", data=rhat_arr)
+            f.create_dataset("rho", data=rho_arr)
+            f.create_dataset("Gamma", data=gamma_arr)
+            f.create_dataset("Q", data=q_arr)
+            f.create_dataset("Upar", data=upar_arr)
+            for key, values in response_data.items():
+                if key in ("response_label", "perturb_species"):
+                    f.create_dataset(key, data=values, dtype=h5py.string_dtype("utf-8"))
+                else:
+                    f.create_dataset(key, data=values)
+            if response_data:
+                f.attrs["response_note"] = (
+                    "kappa=-d(log profile)/d(rho). Density steps preserve the pressure gradient. "
+                    "Use (F_perturbed-F_base)/perturb_delta where perturb_present is true."
+                )
+            f.create_dataset("species_names", data=np.asarray([sp.name.encode("utf-8") for sp in species]))
+            f.attrs["profiles_source"] = str(manifest["profiles_source"])
+            f.attrs["source_transport_solution"] = (
+                "" if manifest["source_transport_solution"] is None else str(manifest["source_transport_solution"])
             )
-            f.create_dataset(
-                "benchmark_rho",
-                data=np.asarray([row["rho"] for row in benchmark_rows], dtype=np.float64),
+            f.attrs["source_dkx_template"] = str(manifest["source_dkx_template"])
+            f.attrs["time_index"] = int(manifest["time_index"])
+            f.attrs["time_value"] = np.nan if time_value is None else float(time_value)
+            f.attrs["backend"] = str(manifest["backend"])
+            f.attrs["max_parallel"] = int(manifest["max_parallel"])
+            for key, value in manifest["solver"].items():
+                f.attrs[f"solver_{key}"] = value
+            f.attrs["wout_sha256"] = manifest["wout_sha256"] or ""
+            f.attrs["include_phi1"] = bool(include_phi1) if include_phi1 is not None else -1
+            f.attrs["axis_zero_padded"] = bool(axis_padded)
+            for key in (
+                "Gamma_key", "Q_key", "Upar_key",
+                "Gamma_scale_to_neopax", "Q_scale_to_neopax", "Upar_bridge",
+            ):
+                value = raw_meta.get(key)
+                if value is not None:
+                    f.attrs[f"raw_{key}"] = str(value)
+            f.attrs["Upar_note"] = (
+                "Upar is derived from dkx FSABFlow using the NTX fixed-field "
+                "parallel-flow bridge factor 2*B0OverBBar/sqrt(pi)."
             )
-            f.create_dataset(
-                "benchmark_cold_run_s",
-                data=np.asarray([row["cold_run_s"] for row in benchmark_rows], dtype=np.float64),
+            f.attrs["normalization_note"] = (
+                "Gamma is converted from dkx particleFlux_vm_* using nbar*vbar/Rbar "
+                "with nbar=1e20 m^-3, Tbar=1 keV, mbar=mp, Rbar=1 m. "
+                "Q is converted from heatFlux_vm_* using (nbar*mbar*vbar^3/Rbar)/e so the written "
+                "values match NEOPAX's eV-based physical heat-flux convention. "
+                "Upar uses the NTX archive-backed observable bridge rather than a raw FSABFlow alias."
             )
-            f.create_dataset(
-                "benchmark_warm_mean_s",
-                data=np.asarray([row["warm_mean_s"] for row in benchmark_rows], dtype=np.float64),
+            f.attrs["radius_note"] = (
+                "The saved coordinate r/rHat uses dkx's rHat output. "
+                "rho is also saved separately from the source NEOPAX transport file."
             )
+            if benchmark_rows:
+                f.attrs["benchmark_note"] = (
+                    "Timing benchmark mode was enabled. cold_run_s includes first-run JAX startup/compile effects; "
+                    "warm_* fields are repeated same-process timings after the configured warmup runs."
+                )
+                f.create_dataset(
+                    "benchmark_rho",
+                    data=np.asarray([row["rho"] for row in benchmark_rows], dtype=np.float64),
+                )
+                f.create_dataset(
+                    "benchmark_cold_run_s",
+                    data=np.asarray([row["cold_run_s"] for row in benchmark_rows], dtype=np.float64),
+                )
+                f.create_dataset(
+                    "benchmark_warm_mean_s",
+                    data=np.asarray([row["warm_mean_s"] for row in benchmark_rows], dtype=np.float64),
+                )
 
     if bool(args.plot):
         _write_summary_plots(

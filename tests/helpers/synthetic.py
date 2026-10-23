@@ -17,6 +17,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from stages.common.dkx_current import CURRENT_CONTRACT_VERSION, CURRENT_NORMALIZATION, CURRENT_UNITS
+
 
 def write_transport_solution(
     path: Path,
@@ -151,6 +153,19 @@ def write_dkx_flux(
         f.create_dataset("Upar", data=upar_arr)
         f.create_dataset("species_names", data=np.asarray([b"e", b"D", b"T"]))
         f.attrs["axis_zero_padded"] = axis_zero_padded
+        measured_rho = rho_arr[1:] if axis_zero_padded else rho_arr
+        group = f.create_group("current")
+        for name, values in {
+            "s": measured_rho**2, "rho": measured_rho, "JdotB": np.zeros_like(measured_rho),
+            "B2": np.ones_like(measured_rho), "J": np.zeros_like(measured_rho),
+        }.items():
+            group.create_dataset(name, data=values)
+        group.attrs["contract_version"] = CURRENT_CONTRACT_VERSION
+        group.attrs["wout_sha256"] = ""
+        for name, units in CURRENT_UNITS.items():
+            group.attrs[f"{name}_units"] = units
+        for name, value in CURRENT_NORMALIZATION.items():
+            group.attrs[name] = value
     return path
 
 
