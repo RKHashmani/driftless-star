@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
 from pathlib import Path
 
 import h5py
 import numpy as np
+
+from common.vmec_namelist import PRESSURE_KEYS, rewrite_assignments
 
 logger = logging.getLogger(__name__)
 
@@ -247,49 +248,9 @@ def _validate_export_profile(rho: np.ndarray, pressure: np.ndarray, *, spline: b
     return rho
 
 
-# Mask quoted strings and comments before reading namelist syntax. A slash or
-# assignment in a title or comment must not mark the end of the INDATA block.
-_NAMELIST_LITERAL = re.compile(r"'(?:(?:'')|[^'])*'|\"(?:(?:\"\")|[^\"])*\"|![^\n]*")
-_ASSIGNMENT = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*=")
-_PRESSURE_KEYS = {"PMASS_TYPE", "PRES_SCALE", "AM", "AM_AUX_S", "AM_AUX_F"}
-
-
 def _rewrite_pressure(text: str, assignments: list[str]) -> str:
     """Replace complete pressure assignments, including indexed and continued arrays."""
-    masked = _NAMELIST_LITERAL.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
-    start = re.search(r"&\s*INDATA\b", masked, re.IGNORECASE)
-    if start is None:
-        raise ValueError("Input does not contain an &INDATA block")
-    end = re.search(r"/|&end\b", masked[start.end():], re.IGNORECASE)
-    if end is None:
-        raise ValueError("Input does not contain a terminating '/' for &INDATA")
-    body_end = start.end() + end.start()
-    matches = list(_ASSIGNMENT.finditer(masked, start.end(), body_end))
-    body = text[start.end():body_end]
-    remove = np.zeros(len(body), dtype=bool)
-    for i, match in enumerate(matches):
-        if match.group(1).upper() not in _PRESSURE_KEYS:
-            continue
-        stop = matches[i + 1].start() if i + 1 < len(matches) else body_end
-        stop = match.start() + len(text[match.start():stop].rstrip())
-        remove[match.start() - start.end():stop - start.end()] = True
-    # Keep comments, including those between continuation lines. Leave all
-    # unrelated assignments, blank lines, and namelist blocks as supplied.
-    for literal in _NAMELIST_LITERAL.finditer(body):
-        if literal.group().startswith("!"):
-            remove[literal.start():literal.end()] = False
-    lines = []
-    offset = 0
-    for line in body.splitlines(keepends=True):
-        deleted = remove[offset:offset + len(line)]
-        kept = "".join(char for char, drop in zip(line, deleted) if not drop or char == "\n")
-        if kept.strip() or not np.any(deleted):
-            lines.append(kept)
-        offset += len(line)
-    body = "".join(lines)
-    if not body.endswith("\n"):
-        body += "\n"
-    return text[:start.end()] + body + "".join("  " + line + "\n" for line in assignments) + text[body_end:]
+    return rewrite_assignments(text, PRESSURE_KEYS, assignments)
 
 
 def _write_vmec_input_with_pressure_fit(

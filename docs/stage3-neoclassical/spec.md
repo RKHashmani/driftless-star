@@ -347,6 +347,20 @@ The forward pass supplies flux profiles versus radius to `NEOPAX` (Stage 5) in t
 
 The validator requires finite, strictly increasing radial coordinates, equal `r` and `rHat`, consistent species and radius dimensions, and finite flux values. If `axis_zero_padded` is true, the first radius and flux column must be zero. The standalone scan and `collect` accept `--output` for a custom aggregate path. Without this option, the command writes the file under `--output-dir`.
 
+The required `current` group contains measured baseline surfaces only. Its grid is independent of synthetic zero-flux axis padding and uses native DKX `psiN` and `rN`, which can differ from the requested profile coordinates.
+
+| Dataset | Shape | Meaning |
+| --- | --- | --- |
+| `current/s`, `current/rho` | `(n_measured,)` | Native normalized toroidal flux and its square root |
+| `current/JdotB` | `(n_measured,)` | Flux-surface average of current dotted with magnetic field, in A T m⁻² |
+| `current/B2` | `(n_measured,)` | Flux-surface average of squared magnetic field, in T² |
+| `current/J` | `(n_measured,)` | `JdotB/sqrt(B2)`, in A m⁻² |
+| `current/accepted_iteration` | `(n_measured,)` | Final accepted DKX iteration, counted from one |
+
+The current group records `contract_version=1`, units, the SI conversion factors, pinned reference density, speed and magnetic field, and the matching `wout_sha256`. `FSABjHat` is multiplied by `e*nBar*vBar*BBar`, and `FSABHat2` by `BBar**2`. `B0OverBBar` does not supply either conversion. The worker checks species-current closure against `sum(Zs*FSABFlow)`. Raw normalized diagnostics stay in native DKX output. Current samples must be finite, strictly ordered and coordinate-consistent, with positive `B2` and identical normalization across surfaces. Finite-difference siblings do not contribute to this group.
+
+Legacy completion records must be regenerated with `prepare` and `run-one`. Aggregates without the current contract are rejected with a regeneration message. Invalid collection inputs leave an existing aggregate intact, and replacement is atomic. New files follow the process umask. Replacing an aggregate preserves its permission bits.
+
 **Gradient-response datasets**
 
 Response mode keeps baseline `Gamma`, `Q` and `Upar` on a unique radial axis. It adds the following datasets. `P` counts pairs of channel and input species. `S` counts output species. `R` counts radii, including any synthetic axis.
@@ -381,7 +395,7 @@ Benchmark repeats and warmup apply to baseline runs only. Each perturbation is s
 
 Preparation must run in the DKX stage environment. It reads the installed DKX metadata. It reuses a result only when the generated namelist, installed DKX identity, equilibrium digest, and surface data agree. If the Git revision or WOUT digest is unavailable, preparation reports why reuse is disabled. The WOUT path can come from `--wout-path` or the common configuration. Preparation removes an invalid `result.json` so Snakemake schedules the surface again. On each rerun, the worker clears its completion file before solving. It writes a replacement only after a successful solve and diagnostic validation. Collection rejects missing or incompatible results before opening the aggregate destination.
 
-The worker calls `dkx.api.write_output` followed by `dkx.api.read_output`. It requires `particleFlux_vm_rHat`, `heatFlux_vm_rHat`, `FSABFlow`, `rHat`, and `B0OverBBar`. DKX iteration arrays use the first dimension for species. The scan uses the final iteration after checking its values. The surface run fails if diagnostics are missing or malformed, final values are nonfinite, or unit conversion overflows. The scan applies the established physical conversions to particle and heat fluxes to produce NEOPAX units. It converts parallel flow with `2*B0OverBBar/sqrt(pi)` times `FSABFlow`. The scan does not substitute radial flux fields with different normalizations. Values for each surface remain in the native HDF5 and result records. Aggregate metadata describes the shared fields and conversions.
+The worker calls `dkx.api.write_output` followed by `dkx.api.read_output`. It requires `particleFlux_vm_rHat`, `heatFlux_vm_rHat`, `FSABFlow`, `rHat`, and `B0OverBBar`, plus `FSABjHat`, `FSABHat2`, `Zs`, `psiN`, `rN`, and `NIterations` for current export. DKX iteration arrays use the first dimension for species. The scan uses the final accepted iteration after checking its values. Phi1 solves can contain several accepted Newton iterations even under `RHSMode=1`. Every Stage 3 run requires a successful solver return. DKX rejects nonconverged solves before writing output. The required current contract applies whether current density feedback is enabled or disabled. The surface run fails if diagnostics are missing or malformed, final values are nonfinite, species-current closure fails, or unit conversion overflows. The scan applies the established physical conversions to particle and heat fluxes to produce NEOPAX units. It converts parallel flow with `2*B0OverBBar/sqrt(pi)` times `FSABFlow`. The scan does not substitute radial flux fields with different normalizations. Values for each surface remain in the native HDF5 and result records. Aggregate metadata describes the shared fields and conversions.
 
 **Native SFINCS output (per surface):** `sfincsOutput.h5` (HDF5) -- the native solver file. The `DKX` radial scan writes one per flux surface (under `runs/rho_*/`) and aggregates them into the handoff above; the standalone `SFINCS` (Fortran) binary writes it directly. Its fields:
 

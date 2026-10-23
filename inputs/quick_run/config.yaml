@@ -37,6 +37,14 @@ convergence:
   method: pointwise
   pressure_rel_tol: 1.0e-2
 
+# Optional DKX current density feedback within each outer iteration.
+current_density_feedback:
+  enabled: false
+  max_iters: 10
+  rel_tol: 1.0e-2
+  abs_tol: 1.0       # A/m²
+  relaxation: 0.5
+
 # Per-stage rerun flags for the ouroboros closed-loop driver, where a stage set to false
 # is frozen and loop iterations after the first reuse its iteration 1 output.
 loop:

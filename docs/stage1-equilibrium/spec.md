@@ -174,6 +174,18 @@ Stage 2 (`BOOZ_XFORM` / `booz_xform_jax`) needs the **full** equilibrium spectru
 
 ---
 
+## Current density feedback adapter
+
+`stages/stage1-equilibrium/current_density_feedback.py` reads the [Stage 3 current contract](../stage3-neoclassical/spec.md), the matching WOUT, and the applied VMEX input. It solves for enclosed toroidal current on the WOUT mesh using the pinned VMEX geometry, radial derivative matrix, and pressure-gradient discretization.
+
+$$\langle B^2\rangle I'(s) + \mu_0 p'(s) I(s) = \Phi_{\mathrm{edge}}\langle J\cdot B\rangle,\qquad I(0)=0,\qquad s=\rho^2.$$
+
+The signed edge flux comes directly from `wout.phi[-1]`. Measured `JdotB` is interpolated in `s`, with linear axis extrapolation from the first two measurements when needed. Measured edge coverage is required. Under-relaxation uses the current realized in the preceding equilibrium's `buco`, including a first input with `NCURR=0`. The adapter exports measured surfaces plus the axis as `AC_AUX_S` and `AC_AUX_F`, with `PCURR_TYPE='akima_spline_i'`, `CURTOR=I(1)`, and `NCURR=1`. It preserves pressure, boundary, inactive iota, and solver settings. Only standard `APHI` and `BLOAT=1` are supported.
+
+The serialized input is parsed through VMEX and evaluated in float64. Its realized current must match the intended Akima spline on identical half-mesh coordinates within `1e-8 A + 1e-6 * max(abs(I_intended))`. Exactly zero edge current with a nonzero interior is rejected independently of that bound. Accurately represented small net currents remain valid. Each feedback-generated equilibrium is also checked against its applied current profile, including current sign and VMEX's half-mesh edge extrapolation for `ctor`. A converged pass copies its applied input to the candidate output without rewriting current.
+
+The adapter CLI accepts `--aggregate`, `--wout`, `--boozer`, `--input`, `--candidate`, `--record`, and `--settings`. The settings JSON contains normalized `current_density_feedback` settings under `settings` and paths for `common_config`, `dkx_config`, and `effective_config` under `inputs`. Run it in the pinned Stage 1 environment with `PYTHONPATH=stages` and `JAX_PLATFORMS=cpu`. Ouroboros supplies these files and runs the adapter through Snakemake.
+
 ## Governing Equations
 
 The equilibrium satisfies ideal-MHD force balance:
