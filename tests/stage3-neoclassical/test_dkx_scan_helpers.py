@@ -8,11 +8,14 @@ profile sources those helpers consume are shared with Stage 4 and live in
 Pure helpers load without DKX. Preparation reads installed DKX metadata.
 These tests replace that lookup with a fixed solver identity.
 Workers import the solver only when they run.
+The stage_env test checks native diagnostics with the installed pinned DKX.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import importlib.util
 import re
 import json
 import os
@@ -848,3 +851,86 @@ def test_converged_phi1_current_uses_final_accepted_newton_iteration() -> None:
     current = scan._extract_current(native, 3)
     assert current["accepted_iteration"] == 3
     assert current["JdotB"] == -10 * scan.CURRENT_NORMALIZATION["JdotB_scale_to_SI"]
+
+
+@pytest.mark.stage_env
+def test_pinned_dkx_current_matches_native_diagnostic(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[2]
+    pin = tomllib.loads((root / "stages/pixi.toml").read_text())["feature"]["dkx"]["pypi-dependencies"]["dkx"]["rev"]
+    if importlib.util.find_spec("dkx") is None:
+        pytest.skip("Run in the Stage 3 environment with pinned DKX")
+    package = importlib.metadata.distribution("dkx")
+    direct = json.loads(package.read_text("direct_url.json") or "{}")
+    revision = direct.get("vcs_info", {}).get("commit_id")
+    assert revision == pin, f"Installed DKX revision {revision} differs from repository pin {pin}"
+
+    monkeypatch.setenv("DKX_CORES", "2")
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    from dkx import units
+    from dkx.api import read_output, write_output
+
+    assert scan.CURRENT_NORMALIZATION["JdotB_scale_to_SI"] == units.PARALLEL_CURRENT
+    assert scan.CURRENT_NORMALIZATION["B2_scale_to_SI"] == units.B_BAR**2
+    input_path = tmp_path / "input.namelist"
+    input_path.write_text("""&general
+  RHSMode = 1
+  saveMatricesAndVectorsInBinary = .false.
+/
+&geometryParameters
+  geometryScheme = 1
+  inputRadialCoordinate = 3
+  rN_wish = 0.3
+  B0OverBBar = 2.5
+  GHat = 1.0
+  IHat = 0.0
+  iota = 1.31
+  epsilon_t = 0.1
+  epsilon_h = 0.0
+  helicity_l = 1
+  helicity_n = 1
+  psiAHat = 0.045
+  aHat = 0.1
+/
+&speciesParameters
+  Zs = 1
+  mHats = 1.0
+  nHats = 1.0
+  THats = 0.5
+  dNHatdrHats = -6.0
+  dTHatdrHats = -3.0
+/
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0
+  nu_n = 8.4774d-3
+  Er = 0.0
+  collisionOperator = 1
+  includeXDotTerm = .true.
+  includeElectricFieldTermInXiDot = .true.
+  useDKESExBDrift = .false.
+  includePhi1 = .false.
+/
+&resolutionParameters
+  Ntheta = 9
+  Nzeta = 1
+  Nxi = 4
+  NL = 2
+  Nx = 3
+  solverTolerance = 1d-10
+/
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+""")
+    output = tmp_path / "native.h5"
+    write_output(input_path, output, overwrite=True)
+    native = read_output(output)
+    current = scan._extract_current(native, 1)
+    native_j = np.asarray(native["FSABjHatOverRootFSAB2"]).ravel()[-1] * units.CURRENT_DENSITY
+    np.testing.assert_allclose(current["J"], native_j, rtol=1e-14)
+    np.testing.assert_allclose(current["JdotB"], np.asarray(native["FSABFlow"]).ravel()[-1] * units.PARALLEL_CURRENT)
+    assert current["accepted_iteration"] == 1
+    assert current["s"] == pytest.approx(0.09)
+    assert current["rho"] == pytest.approx(0.3)
+    assert current["B2"] == pytest.approx(float(np.asarray(native["FSABHat2"]).item()) * units.B_BAR**2)
+    assert current["B2"] > 2.0
