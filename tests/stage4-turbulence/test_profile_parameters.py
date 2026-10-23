@@ -113,6 +113,20 @@ def prepare(tmp_path, *extra, config_text=None, template_text="", source="prescr
     return json.loads((out / "manifest.json").read_text())
 
 
+@pytest.mark.parametrize("operator", ["lenard_bernstein", "landau"])
+@pytest.mark.parametrize("source", ["fixed", "profiles"])
+def test_collision_selection_never_rescales_rates(tmp_path: Path, operator: str, source: str) -> None:
+    manifest = prepare(tmp_path, "--collision-operator", operator,
+                       "--collisionality-source", source, "--nu-ion", "0.456", "--nu-electron", "0.789")
+    for run in manifest["runs"]:
+        for sp in run["runtime_species"]:
+            audit = run["parameter_audit"]
+            expected = (0.789 if sp["charge"] < 0 else 0.456) if source == "fixed" else (
+                sp["self_collision_rate_s"] * audit["reference_length_m"] / audit["reference_speed_ms"]
+            )
+            assert sp["nu"] == pytest.approx(expected)
+
+
 @pytest.mark.parametrize("beta_source", ["fixed", "profiles"])
 @pytest.mark.parametrize("nu_source", ["fixed", "profiles"])
 def test_sources_toml_audit_and_face_values(tmp_path, beta_source, nu_source):
@@ -271,6 +285,7 @@ def test_full_scan_forwards_sources_scaling_and_reducer(tmp_path, monkeypatch, r
 
     def collect(args):
         assert args.average_reducer == reducer
+        assert args.t_final is None
         return 0
 
     monkeypatch.setattr(scan, "cmd_collect", collect)
@@ -280,10 +295,16 @@ def test_full_scan_forwards_sources_scaling_and_reducer(tmp_path, monkeypatch, r
         "--gkx-template", str(template), "--rho-star-physical", "0.01",
         "--beta-source", "profiles", "--collisionality-source", "profiles",
         "--collisionality-scaling-factor", "2.5",
-        "--average-reducer", reducer,
+        "--average-reducer", reducer, "--run-to", "saturation", "--collision-operator", "landau",
+        "--damp-ends-rate", "0.2", "--saturation-rel-sem", "0.04", "--saturation-min-window", "5",
     ])
     assert scan.cmd_all(args) == 0
     manifest = json.loads((tmp_path / "out/manifest.json").read_text())
+    assert manifest["time"]["run_to"] == "saturation"
+    assert manifest["time"]["collision_operator"] == "landau"
+    assert manifest["time"]["damp_ends_rate"] == 0.2
+    assert manifest["time"]["saturation_rel_sem"] == 0.04
+    assert manifest["time"]["saturation_min_window"] == 5
     for run in manifest["runs"]:
         audit = run["parameter_audit"]
         assert audit["beta_source"] == audit["collisionality_source"] == "profiles"

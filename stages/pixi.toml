@@ -80,20 +80,19 @@ env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 neo-jax = ">=1.0.1,<2"
 
 [feature.gkx.dependencies]
+python = ">=3.11,<3.15"
 jax = ">=0.10.2,<0.11"
 numpy = ">=2.5.1,<3"
 scipy = ">=1.17.1,<2"
 matplotlib-base = ">=3.10.8,<4"
 netcdf4 = ">=1.7.4,<2"
-diffrax = ">=0.7.2,<0.8"
-equinox = ">=0.13.6,<0.14"
-solvax = ">=0.13.0,<0.14"
+solvax = ">=0.31.0,<0.32"
 tqdm = ">=4.68.4,<5"
 booz-xform-jax = ">=0.5.0,<0.6"
 h5py = ">=3.16.0,<4"
 
 [feature.gkx.pypi-dependencies]
-gkx = { git = "https://github.com/uwplasma/GKX.git", rev = "fb5599745573773d422b6cdae914d8f8435ef0d2" }
+gkx = { git = "https://github.com/uwplasma/GKX.git", rev = "7f83947c23cf741d0111ecadeb0060e176d2b16f" }
 
 [feature.gkx.tasks.stage-4-gkx]
 cmd = "gkx run --config ../inputs/quick_run/HSX_vacuum_ns201_quickrun.toml --out ../outputs/quick_run/stage4_turbulence/hsx_run_quickrun"

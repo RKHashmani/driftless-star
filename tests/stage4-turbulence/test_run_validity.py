@@ -1,5 +1,6 @@
 import json
 import os
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -10,13 +11,14 @@ validity = load_stage_module("stages/stage4-turbulence/run_validity.py")
 
 
 @pytest.fixture
-def prepared(tmp_path):
+def prepared(tmp_path, solver_identity):
     config = tmp_path / "input.toml"
     config.write_text("beta = 0.01\nnu = 0.02\n")
     equilibrium = tmp_path / "wout.nc"
     equilibrium.write_bytes(b"equilibrium")
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
+        "solver_provenance": dict(solver_identity),
         "vmec_file": str(equilibrium),
     }
     run = {"config_path": str(config), "output_prefix": str(tmp_path / "result")}
@@ -40,6 +42,20 @@ def test_unchanged_inputs_reuse_trusted_completion(prepared):
     assert validity.completion_status(manifest, run) == (True, "trusted completion")
     sidecar = json.loads(validity.completion_path(run).read_text())
     assert sidecar["input_fingerprint"] == run["input_fingerprint"]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("installed_revision", "other"), ("expected_revision", "other"), ("precision", "float64"),
+])
+def test_provenance_changes_invalidate_completion(prepared: tuple[dict, dict], key: str, value: str) -> None:
+    manifest, run = prepared
+    complete(manifest, run)
+    assert validity.completion_status(manifest, run)[0]
+    manifest["solver_provenance"][key] = value
+    assert validity.input_fingerprint(manifest, run) != run["input_fingerprint"]
+    assert not validity.completion_status(manifest, run)[0]
+    with pytest.raises(ValueError, match="Prepare the scan again"):
+        validity.begin_attempt(manifest, run)
 
 
 @pytest.mark.parametrize("target", ["config_path", "vmec_file"])
@@ -201,18 +217,6 @@ def test_diagnostics_mutation_rejects_completion(prepared):
     assert validity.completion_status(manifest, run) == (False, "diagnostics changed after successful completion")
 
 
-def test_legacy_results_remain_readable_but_reprepare_needs_success(prepared):
-    manifest, run = prepared
-    manifest["schema_version"] = 2
-    write_diagnostics(run, "t\n1\n")
-    assert validity.completion_status(manifest, run)[0]
-    manifest["schema_version"] = 3
-    write_diagnostics(run)
-    assert validity.completion_status(manifest, run) == (False, "missing trusted completion marker")
-    complete(manifest, run)
-    assert validity.completion_status(manifest, run)[0]
-
-
 @pytest.fixture
 def worker(prepared, tmp_path):
     import argparse
@@ -228,14 +232,10 @@ def worker(prepared, tmp_path):
     return manifest, run, args
 
 
-def test_attempt_discards_generated_geometry_but_legacy_preserves_it(worker):
+def test_attempt_discards_generated_geometry(worker):
     manifest, run, _ = worker
     path = Path(run["geometry_file"])
     path.write_bytes(b"cached old equilibrium")
-    manifest["schema_version"] = 2
-    validity.begin_attempt(manifest, run)
-    assert path.exists()
-    manifest["schema_version"] = 3
     validity.begin_attempt(manifest, run)
     assert not path.exists()
 
@@ -245,10 +245,13 @@ def test_worker_certifies_success_and_reuses_it(worker, monkeypatch, capsys):
     scan = load_stage_module("stages/stage4-turbulence/gkx_radial_scan.py")
     manifest, run, args = worker
     calls = []
+    summary = Path(f"{run['output_prefix']}.summary.json")
+    summary_text = '{"saturation": {"saturated": false, "reasons": ["insufficient_window"]}}\n'
 
     def solver(*positional, **kwargs):
         calls.append(positional)
         write_diagnostics(run)
+        summary.write_text(summary_text)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(scan.subprocess, "run", solver)
@@ -256,6 +259,8 @@ def test_worker_certifies_success_and_reuses_it(worker, monkeypatch, capsys):
     assert validity.completion_status(manifest, run)[0]
     assert scan.cmd_run_one(args) == 0
     assert len(calls) == 1
+    assert "--no-plots" in calls[0][0]
+    assert summary.read_text() == summary_text
     assert "already_completed" in capsys.readouterr().out
 
 
@@ -344,6 +349,39 @@ def test_collector_rejects_untrusted_results_without_replacing_flux_files(worker
     for path in (collect_args.out, collect_args.neopax_flux_out):
         assert Path(path).read_bytes() == b"previous flux artifact"
     assert "Cannot collect" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("allow_incomplete", [False, True])
+def test_collection_does_not_probe_executing_solver(
+    worker: tuple[dict, dict, Namespace], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow_incomplete: bool,
+) -> None:
+    import h5py
+    scan = load_stage_module("stages/stage4-turbulence/gkx_radial_scan.py")
+    provenance = load_stage_module("stages/stage4-turbulence/solver_provenance.py")
+    manifest, run, worker_args = worker
+    run["runtime_species"] = [{"name": "D", "mass": 2.0, "density_reference_physical": 1.0,
+                               "temperature_reference_physical": 1.0}]
+    run["input_fingerprint"] = validity.input_fingerprint(manifest, run)
+    Path(worker_args.manifest).write_text(json.dumps(manifest))
+    token = validity.begin_attempt(manifest, run)
+    write_diagnostics(run, "t,heat_flux,particle_flux,heat_flux_s0,particle_flux_s0\n0,1,2,1,2\n1,3,4,3,4\n")
+    validity.certify_completion(manifest, run, token)
+
+    def unavailable() -> dict:
+        raise ValueError("GKX is not installed on the collection host")
+
+    monkeypatch.setattr(provenance, "current_provenance", unavailable)
+    monkeypatch.setattr(scan, "current_provenance", unavailable)
+    assert validity.completion_status(manifest, run)[0]
+    extra = ["--allow-incomplete"] if allow_incomplete else []
+    args = scan.build_parser().parse_args([
+        "collect", "--manifest", worker_args.manifest,
+        "--out", str(tmp_path / "flux.h5"), "--neopax-flux-out", str(tmp_path / "neopax.h5"),
+        "--no-plot", "--no-plot-run-heat-traces", *extra,
+    ])
+    assert scan.cmd_collect(args) == 0
+    with h5py.File(args.out) as result:
+        assert result["heat_flux_total"][0] == 2
 
 
 def test_explicit_incomplete_collection_marks_invalid_perturbation_absent(worker, tmp_path):
@@ -444,3 +482,55 @@ def test_malformed_completion_json_is_an_untrusted_result(prepared):
     valid, reason = validity.completion_status(manifest, run)
     assert not valid
     assert "cannot verify completion" in reason
+
+
+@pytest.mark.parametrize("command", ["run", "run-one"])
+@pytest.mark.parametrize("completed", [False, True])
+def test_execution_rejects_changed_solver_before_start_or_reuse(
+    worker, solver_identity, monkeypatch, command, completed,
+):
+    from types import SimpleNamespace
+    scan = load_stage_module("stages/stage4-turbulence/gkx_radial_scan.py")
+    manifest, run, args = worker
+    if completed:
+        complete(manifest, run)
+    solver_identity["precision"] = "float64"
+    monkeypatch.setattr(scan, "_launch_subprocess", lambda **kw: pytest.fail("worker must not start"))
+    monkeypatch.setattr(scan.subprocess, "run", lambda *a, **kw: pytest.fail("solver must not start"))
+    launch_args = SimpleNamespace(manifest=args.manifest, max_parallel=1, backend="cpu", threads_per_run=1)
+    assert (scan.cmd_run(launch_args) if command == "run" else scan.cmd_run_one(args)) == 2
+    if completed:
+        assert validity.completion_path(run).is_file()
+
+
+@pytest.mark.parametrize("target", ["manifest", "completion"])
+def test_missing_solver_provenance_rejects_completion(prepared, target):
+    manifest, run = prepared
+    complete(manifest, run)
+    if target == "manifest":
+        manifest.pop("solver_provenance")
+    else:
+        marker = validity.completion_path(run)
+        payload = json.loads(marker.read_text())
+        payload.pop("solver_provenance")
+        marker.write_text(json.dumps(payload))
+    assert not validity.completion_status(manifest, run)[0]
+    if target == "manifest":
+        with pytest.raises(ValueError, match="Prepare the scan again"):
+            validity.begin_attempt(manifest, run)
+
+
+@pytest.mark.parametrize("key", ["expected_revision", "installed_revision", "precision"])
+def test_incomplete_recorded_provenance_rejects_matching_completion(prepared, key):
+    manifest, run = prepared
+    manifest["solver_provenance"].pop(key)
+    run["input_fingerprint"] = validity.input_fingerprint(manifest, run)
+    write_diagnostics(run)
+    validity.completion_path(run).write_text(json.dumps({
+        "solver_provenance": manifest["solver_provenance"],
+        "input_fingerprint": run["input_fingerprint"],
+        "diagnostics_sha256": validity._digest(validity.diagnostics_path(run)),
+    }))
+    valid, reason = validity.completion_status(manifest, run)
+    assert not valid
+    assert key in reason

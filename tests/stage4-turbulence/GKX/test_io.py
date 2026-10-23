@@ -27,7 +27,7 @@ def _load_toml_module() -> Any:
             raise SystemExit("Need a TOML parser: install Python>=3.11 or `pip install tomli`") from exc
 
 from gkx.config import GeometryConfig, GridConfig, InitializationConfig, TimeConfig
-from gkx.runtime_config import (
+from gkx.config import (
     RuntimeCollisionConfig,
     RuntimeExpertConfig,
     RuntimeNormalizationConfig,

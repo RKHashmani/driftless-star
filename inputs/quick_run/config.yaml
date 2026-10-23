@@ -116,6 +116,17 @@ stage4:
     # Multiply profile collision frequencies by this nonnegative value.
     # Zero disables collisions.
     collisionality_scaling_factor: 1.0
+    # Solver controls override the GKX template when supplied.
+    # "lenard_bernstein": Driftless Star default. "landau": alternative collision operator.
+    # collision_operator: "lenard_bernstein"
+    # "t_max": integrate to the horizon. "saturation": permit GKX to stop early.
+    # run_to: "t_max"
+    # Nonnegative end-damping rate in inverse normalized time.
+    # damp_ends_rate: 0.1
+    # Positive relative SEM threshold for saturation stopping.
+    # saturation_rel_sem: 0.05
+    # Positive minimum saturation window in normalized time. Unset by default.
+    # saturation_min_window: 10.0
     # --- Profile source ---
     # Options include:
     # "analytical": built from the analytical parameters in common_input.toml [profiles],

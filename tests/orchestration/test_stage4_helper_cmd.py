@@ -42,6 +42,11 @@ _scan = load_stage_module(_STAGE4_SCRIPT)
 # scan-level flags. The t_max key is deliberately spelled --t-final, the prepare
 # parser's alias whose argparse dest is t_max.
 _PREPARE_OPTIONALS: list[tuple[str, str, object]] = [
+    ("collision_operator", "--collision-operator", "landau"),
+    ("run_to", "--run-to", "saturation"),
+    ("damp_ends_rate", "--damp-ends-rate", 0.2),
+    ("saturation_rel_sem", "--saturation-rel-sem", 0.03),
+    ("saturation_min_window", "--saturation-min-window", 10.0),
     ("beta_source", "--beta-source", "profiles"),
     ("collisionality_source", "--collisionality-source", "profiles"),
     ("collisionality_scaling_factor", "--collisionality-scaling-factor", 0.5),

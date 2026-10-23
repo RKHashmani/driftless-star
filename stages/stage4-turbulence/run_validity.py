@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from solver_provenance import verify_provenance, verify_recorded_provenance
+
 
 def _digest(path: Path) -> str:
     hasher = hashlib.sha256()
@@ -51,7 +53,8 @@ def input_fingerprint(manifest: dict[str, Any], run: dict[str, Any]) -> str:
     runtime_names = manifest.get("runtime_species_names", [])
     species_meta = manifest.get("species_meta", [])
     content = {
-        "fingerprint_version": 3,
+        "fingerprint_version": 4,
+        "solver_provenance": manifest.get("solver_provenance"),
         "runtime_toml": _digest(Path(run["config_path"])),
         "collection": {
             "reference": {key: reference.get(key) for key in (
@@ -100,10 +103,27 @@ def _diagnostics_status(run: dict[str, Any], *, strict: bool) -> tuple[bool, str
 
 
 def completion_status(manifest: dict[str, Any], run: dict[str, Any]) -> tuple[bool, str]:
-    """Return whether the result is valid and the reason, for all workflow callers."""
-    trusted = int(manifest.get("schema_version", 1)) >= 3
-    valid, reason = _diagnostics_status(run, strict=trusted)
-    if not valid or not trusted:
+    """Check saved inputs and completion evidence without probing a solver.
+
+    Parameters
+    ----------
+    manifest : dict
+        Prepared scan manifest.
+    run : dict
+        Run whose diagnostics and completion marker are checked.
+
+    Returns
+    -------
+    tuple of bool and str
+        Whether the saved result is trusted, followed by the reason.
+        Execution callers must also verify the executing solver before reuse.
+    """
+    try:
+        verify_recorded_provenance(manifest)
+    except (OSError, ValueError) as exc:
+        return False, str(exc)
+    valid, reason = _diagnostics_status(run, strict=True)
+    if not valid:
         return valid, reason
     try:
         expected = run.get("input_fingerprint")
@@ -115,6 +135,8 @@ def completion_status(manifest: dict[str, Any], run: dict[str, Any]) -> tuple[bo
         if not marker.is_file():
             return False, "missing trusted completion marker"
         completion = json.loads(marker.read_text(encoding="utf-8"))
+        if completion.get("solver_provenance") != manifest["solver_provenance"]:
+            return False, "completion has missing or different solver provenance. Prepare the scan again."
         if completion.get("input_fingerprint") != expected:
             return False, "completion belongs to different inputs"
         if completion.get("diagnostics_sha256") != _digest(diagnostics_path(run)):
@@ -134,11 +156,9 @@ def _invalidate_outputs(run: dict[str, Any]) -> None:
         path.unlink(missing_ok=True)
 
 
-def begin_attempt(manifest: dict[str, Any], run: dict[str, Any]) -> str | None:
+def begin_attempt(manifest: dict[str, Any], run: dict[str, Any]) -> str:
     """Check prepared inputs before removing outputs for a worker attempt."""
-    if int(manifest.get("schema_version", 1)) < 3:
-        _invalidate_outputs(run)
-        return None
+    verify_provenance(manifest)
     fingerprint = input_fingerprint(manifest, run)
     if not run.get("input_fingerprint") or fingerprint != run["input_fingerprint"]:
         raise ValueError("Runtime inputs changed after preparation. Prepare the scan again.")
@@ -150,18 +170,17 @@ def begin_attempt(manifest: dict[str, Any], run: dict[str, Any]) -> str | None:
 
 def certify_completion(manifest: dict[str, Any], run: dict[str, Any], token: str | None) -> None:
     """Certify fresh output only after the caller has checked solver success."""
-    trusted = int(manifest.get("schema_version", 1)) >= 3
-    valid, reason = _diagnostics_status(run, strict=trusted)
+    verify_provenance(manifest)
+    valid, reason = _diagnostics_status(run, strict=True)
     if not valid:
         raise ValueError(reason)
-    if not trusted:
-        return
     if not token or token != run.get("input_fingerprint") or input_fingerprint(manifest, run) != token:
         raise ValueError("Runtime inputs changed during the worker invocation")
     marker = completion_path(run)
     temporary = marker.with_suffix(".json.tmp")
     temporary.write_text(json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
+        "solver_provenance": manifest["solver_provenance"],
         "input_fingerprint": token,
         "diagnostics_sha256": _digest(diagnostics_path(run)),
     }, indent=2) + "\n", encoding="utf-8")

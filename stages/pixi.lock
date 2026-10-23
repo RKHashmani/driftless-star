@@ -3689,7 +3689,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/certifi-2026.7.22-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cpython-3.14.6-py314hd8ed1ab_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cycler-0.12.1-pyhcf101f3_2.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/diffrax-0.7.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/equinox-0.13.8-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
@@ -3701,23 +3700,21 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/importlib-metadata-9.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jax-0.10.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jaxtyping-0.3.11-pyhd8ed1ab_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/lineax-0.1.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/opt_einsum-3.4.0-pyhd8ed1ab_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/optimistix-0.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.3-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.6-h4df99d1_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.13.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.31.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.70.0-pyh8f84b5b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/GKX.git?rev=fb5599745573773d422b6cdae914d8f8435ef0d2#fb5599745573773d422b6cdae914d8f8435ef0d2
+      - pypi: git+https://github.com/uwplasma/GKX.git?rev=7f83947c23cf741d0111ecadeb0060e176d2b16f#7f83947c23cf741d0111ecadeb0060e176d2b16f
       linux-aarch64:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/blosc-1.21.6-hb4dfabd_1.conda
@@ -3830,7 +3827,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/certifi-2026.7.22-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cpython-3.14.6-py314hd8ed1ab_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cycler-0.12.1-pyhcf101f3_2.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/diffrax-0.7.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/equinox-0.13.8-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
@@ -3842,23 +3838,21 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/importlib-metadata-9.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jax-0.10.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jaxtyping-0.3.11-pyhd8ed1ab_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/lineax-0.1.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/opt_einsum-3.4.0-pyhd8ed1ab_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/optimistix-0.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.3-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.6-h4df99d1_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.13.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.31.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.70.0-pyh8f84b5b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/GKX.git?rev=fb5599745573773d422b6cdae914d8f8435ef0d2#fb5599745573773d422b6cdae914d8f8435ef0d2
+      - pypi: git+https://github.com/uwplasma/GKX.git?rev=7f83947c23cf741d0111ecadeb0060e176d2b16f#7f83947c23cf741d0111ecadeb0060e176d2b16f
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/booz-xform-jax-0.5.0-pyhc364b38_0.conda
@@ -3868,7 +3862,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/certifi-2026.7.22-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cpython-3.14.6-py314hd8ed1ab_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cycler-0.12.1-pyhcf101f3_2.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/diffrax-0.7.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/equinox-0.13.8-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
@@ -3880,17 +3873,15 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/importlib-metadata-9.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jax-0.10.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jaxtyping-0.3.11-pyhd8ed1ab_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/lineax-0.1.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/opt_einsum-3.4.0-pyhd8ed1ab_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/optimistix-0.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.3-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.6-h4df99d1_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.13.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.31.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.70.0-pyh8f84b5b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
@@ -3989,7 +3980,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/xorg-libxdmcp-1.1.5-hc919400_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-hed4e4f5_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-      - pypi: git+https://github.com/uwplasma/GKX.git?rev=fb5599745573773d422b6cdae914d8f8435ef0d2#fb5599745573773d422b6cdae914d8f8435ef0d2
+      - pypi: git+https://github.com/uwplasma/GKX.git?rev=7f83947c23cf741d0111ecadeb0060e176d2b16f#7f83947c23cf741d0111ecadeb0060e176d2b16f
   stage-4-gkx-gpu:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -4148,7 +4139,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/cuda-cudart_linux-64-12.9.79-h3f2d84a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cuda-version-12.9-h4f385c5_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/cycler-0.12.1-pyhcf101f3_2.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/diffrax-0.7.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/equinox-0.13.8-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
@@ -4160,23 +4150,21 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/importlib-metadata-9.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jax-0.10.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/jaxtyping-0.3.11-pyhd8ed1ab_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/lineax-0.1.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/opt_einsum-3.4.0-pyhd8ed1ab_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/optimistix-0.1.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.3-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.14.6-h4df99d1_101.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.14-8_cp314.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.13.0-pyhc364b38_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.31.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tqdm-4.70.0-pyh8f84b5b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/wadler-lindig-0.1.7-pyhe01879c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: git+https://github.com/uwplasma/GKX.git?rev=fb5599745573773d422b6cdae914d8f8435ef0d2#fb5599745573773d422b6cdae914d8f8435ef0d2
+      - pypi: git+https://github.com/uwplasma/GKX.git?rev=7f83947c23cf741d0111ecadeb0060e176d2b16f#7f83947c23cf741d0111ecadeb0060e176d2b16f
   stage-5-neopax:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -21329,21 +21317,6 @@ packages:
   run_exports: {}
   size: 18455
   timestamp: 1753199211006
-- conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.13.0-pyhc364b38_0.conda
-  sha256: 26d7eef9d5439ed73797c6cc4aafe1767f70e79f542947ca0102ce58b36aabe0
-  md5: 8493e265d4979b1f33ac52d91a6cbc76
-  depends:
-  - python >=3.10
-  - jax
-  - equinox
-  - python
-  license: MIT
-  license_family: MIT
-  purls:
-  - pkg:pypi/solvax?source=hash-mapping
-  run_exports: {}
-  size: 122544
-  timestamp: 1785960384795
 - conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.28.5-pyhc364b38_0.conda
   sha256: c7f66250390a1cbe56b07a02dced1559a1fd72003e064988878e34915b5e1127
   md5: 8d6153b4b5359325c245f4553dd5a0fc
@@ -21360,6 +21333,22 @@ packages:
   run_exports: {}
   size: 158870
   timestamp: 1792394894887
+- conda: https://conda.anaconda.org/conda-forge/noarch/solvax-0.31.0-pyhc364b38_0.conda
+  sha256: ff04471f311b3d93d34a98b7f8592256bb0926c998889c8903b081e36a022666
+  md5: 1220ca06a36473889cf33833647dc6b2
+  depends:
+  - python >=3.10
+  - jax >=0.4.38
+  - equinox >=0.13.3
+  - numpy >=1.24
+  - python
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/solvax?source=hash-mapping
+  run_exports: {}
+  size: 164781
+  timestamp: 1792562245728
 - conda: https://conda.anaconda.org/conda-forge/noarch/sympy-1.14.0-pyh2585a3b_106.conda
   sha256: 1c8057e6875eba958aa8b3c1a072dc9a75d013f209c26fd8125a5ebd3abbec0c
   md5: 32d866e43b25275f61566b9391ccb7b5
@@ -26908,20 +26897,18 @@ packages:
   - myst-parser ; extra == 'docs'
   - furo ; extra == 'docs'
   requires_python: '>=3.11'
-- pypi: git+https://github.com/uwplasma/GKX.git?rev=fb5599745573773d422b6cdae914d8f8435ef0d2#fb5599745573773d422b6cdae914d8f8435ef0d2
+- pypi: git+https://github.com/uwplasma/GKX.git?rev=7f83947c23cf741d0111ecadeb0060e176d2b16f#7f83947c23cf741d0111ecadeb0060e176d2b16f
   name: gkx
-  version: 1.7.1
+  version: 2.6.0
   requires_dist:
-  - jax
-  - jaxlib
+  - jax>=0.10.1
+  - jaxlib>=0.10.1
   - numpy
   - matplotlib
   - scipy
   - netcdf4
-  - diffrax
-  - equinox
-  - solvax>=0.12.0
-  - tomli ; python_full_version < '3.11'
+  - solvax>=0.30.0
+  - booz-xform-jax>=0.4.3
   - tqdm
   - sphinx ; extra == 'docs'
   - sphinx-rtd-theme ; extra == 'docs'
@@ -26930,7 +26917,8 @@ packages:
   - twine ; extra == 'release'
   - pytest ; extra == 'dev'
   - pytest-cov ; extra == 'dev'
-  - ruff ; extra == 'dev'
+  - pytest-xdist ; extra == 'dev'
+  - ruff==0.16.4 ; extra == 'dev'
   - mypy ; extra == 'dev'
   - mpmath ; extra == 'dev'
   - gmpy2 ; extra == 'dev'
@@ -26943,7 +26931,8 @@ packages:
   - build ; extra == 'dev'
   - twine ; extra == 'dev'
   - pillow ; extra == 'assets'
-  requires_python: '>=3.10'
+  - pandas ; extra == 'validation'
+  requires_python: '>=3.11'
 - pypi: git+https://github.com/uwplasma/NEOPAX.git?rev=ce4ea4d36e327bd6c826c62b1cf4a1e3260c9856#ce4ea4d36e327bd6c826c62b1cf4a1e3260c9856
   name: neopax
   version: 0.1.dev387+gce4ea4d36.d20261021

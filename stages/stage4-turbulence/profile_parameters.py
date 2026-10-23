@@ -4,7 +4,7 @@ import math
 from netCDF4 import Dataset
 from scipy.constants import elementary_charge, proton_mass
 
-CONVENTION = "t3d-74a06df-self-gkx-fb55997-proton-v1"
+CONVENTION = "t3d-74a06df-self-proton-v1"
 
 
 def positive(value: float, label: str) -> float:

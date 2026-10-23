@@ -1,17 +1,18 @@
-"""Check profile parameters with three one-step CPU runs of pinned GKX.
+"""Check profile parameters with bounded solver runs of pinned GKX.
 
-From the repository root, set GKX_SOURCE to a checkout of PINNED_REVISION,
-STAGE4_PYTHON to a Python interpreter with Stage 4 dependencies,
+From the repository root, set STAGE4_PYTHON to a Python interpreter with Stage 4 dependencies,
 STAGE4_MANIFEST to a prepared manifest, and STAGE4_VMEC to a real equilibrium.
 
     export MPLCONFIGDIR=/tmp/stage4-mpl
     export JAX_PLATFORMS=cpu
-    export PYTHONPATH="${GKX_SOURCE:?}/src:$PWD/stages:$PWD/stages/stage4-turbulence"
+    export PYTHONPATH="$PWD/stages:$PWD/stages/stage4-turbulence"
     "${STAGE4_PYTHON:?}" tests/stage4-turbulence/acceptance/pinned_gkx.py --manifest "${STAGE4_MANIFEST:?}" --vmec "${STAGE4_VMEC:?}" --out /tmp/stage4-pinned-repro
 
+Installed VCS metadata or a clean source checkout must match stages/pixi.toml.
+To use a checkout, prepend its src directory to PYTHONPATH. Use a fresh output directory.
 Checks remain active with Python -O. Each solver run has a 180-second limit.
-Cases use one kinetic deuterium species and adiabatic electrons. They check
-fixed inputs, profile collisions, and profile beta with electromagnetic fields.
+Cases use deuterium or D/T with adiabatic electrons. They check fixed inputs,
+profile collisions, electromagnetic fields, and explicit Landau selection.
 They do not establish converged transport or kinetic-electron behavior.
 """
 
@@ -19,6 +20,7 @@ import argparse
 import copy
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -26,7 +28,8 @@ from dataclasses import replace
 
 import numpy as np
 
-PINNED_REVISION = "fb5599745573773d422b6cdae914d8f8435ef0d2"
+from solver_provenance import current_provenance
+from run_validity import input_fingerprint, completion_status
 
 
 class StartupGeometry:
@@ -50,8 +53,12 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--vmec", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--backend", choices=("cpu", "gpu"), default="cpu")
+    parser.add_argument(
+        "--cases", nargs="+", choices=("fixed", "profile_collisions", "profile_em", "dt_species", "landau"),
+        default=["fixed", "profile_collisions", "profile_em", "dt_species", "landau"],
+    )
     args = parser.parse_args()
-    import gkx
     import gkx_radial_scan as scan
     import profile_parameters as profiles
     from gkx.workflows.runtime.toml import load_runtime_from_toml
@@ -60,21 +67,20 @@ def main() -> None:
         build_runtime_linear_terms,
     )
 
-    source_root = Path(gkx.__file__).resolve().parents[2]
-    revision = subprocess.check_output(
-        ["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True
-    ).strip()
-    require(revision == PINNED_REVISION, f"Expected GKX {PINNED_REVISION}, imported {revision} from {source_root}")
-    print("Verified pinned GKX source", revision, flush=True)
+    provenance = current_provenance()
+    print("Verified executing GKX", provenance, flush=True)
 
     manifest = json.loads(args.manifest.read_text())
     vmec_file = args.vmec.resolve()
     output_dir = args.out.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=False)
     manifest["vmec_file"] = str(vmec_file)
+    manifest["booz_file"] = None
+    manifest["schema_version"] = 4
+    manifest["solver_provenance"] = provenance
     manifest["grid"].update(Nx=4, Ny=4, Nz=8, ntheta=8, nperiod=1)
     manifest["time"].update(
-        t_max=0.00001, dt=0.00001, chunk_steps=1, sample_stride=1,
+        t_max=0.00001, dt=0.00001, sample_stride=1, run_to="t_max",
         diagnostics_stride=1, fixed_dt=True, state_sharding=None,
     )
     manifest["run"].update(Nl=2, Nm=4)
@@ -86,6 +92,7 @@ def main() -> None:
     base_run["runtime_species"] = [dict(
         name="ion", charge=1.0, mass=2.0, density=1.0, temperature=1.0,
         tprim=1.0, fprim=1.0, nu=0.01,
+        density_reference_physical=1.0, temperature_reference_physical=1.0,
     )]
     length, field = profiles.geometry_scales(vmec_file, need_field=True)
     beta = profiles.reference_beta(1.0, 1.0, field, "acceptance")
@@ -93,13 +100,26 @@ def main() -> None:
     collision_frequency = rate * length / profiles.reference_speed(1.0, "acceptance")
     results = []
 
-    for name in ["fixed", "profile_collisions", "profile_em"]:
+    for name in args.cases:
         case_dir = output_dir / name
         case_dir.mkdir(exist_ok=True)
         case_manifest = copy.deepcopy(manifest)
         case_run = copy.deepcopy(base_run)
         electromagnetic = name == "profile_em"
-        case_run["geometry_file_toml"] = str(case_dir / "geometry.eik.nc")
+        case_run.update(index=0, run_dir=str(case_dir), output_prefix=str(case_dir / "smoke"),
+                        config_path=str(case_dir / "runtime.toml"), geometry_file=str(case_dir / "geometry.eik.nc"),
+                        geometry_file_toml=str(case_dir / "geometry.eik.nc"), response_label="base")
+        case_manifest["time"]["collision_operator"] = "landau" if name == "landau" else "lenard_bernstein"
+        if name == "dt_species":
+            case_run["runtime_species"][0]["name"] = "D"
+            case_run["runtime_species"].append(dict(case_run["runtime_species"][0], name="T", mass=3.0))
+        case_manifest["runtime_species_names"] = [sp["name"] for sp in case_run["runtime_species"]]
+        case_manifest["species_meta"] = [
+            dict(name=sp["name"], mass_mp=sp["mass"], charge=sp["charge"]) for sp in case_run["runtime_species"]
+        ]
+        case_manifest["normalization"]["reference_species_name"] = case_run["runtime_species"][0]["name"]
+        case_manifest["source_rho"] = []
+        case_manifest["runs"] = [case_run]
         case_run["beta"] = beta if electromagnetic else 0.0
         case_run["runtime_species"][0]["nu"] = (
             0.01 if name == "fixed" else collision_frequency
@@ -117,7 +137,7 @@ def main() -> None:
         terms = build_runtime_linear_terms(config)
         require(config.species[0].nu == case_run["runtime_species"][0]["nu"], f"{name} TOML collision frequency")
         require(math.isclose(float(params.nu[0]), config.species[0].nu, rel_tol=1e-6), f"{name} runtime frequency")
-        require(float(params.beta) == case_run["beta"], f"{name} runtime beta")
+        require(math.isclose(float(params.beta), case_run["beta"], rel_tol=1e-6), f"{name} runtime beta")
         require(terms.apar == terms.bpar == float(electromagnetic), f"{name} electromagnetic terms")
         require(terms.collisions == 1.0, f"{name} collision term")
 
@@ -151,10 +171,13 @@ def main() -> None:
                     f"{name} audit {term} must match pinned build_runtime_linear_terms",
                 )
 
-        command = [
-            sys.executable, "-m", "gkx.cli", "run", "--config", str(config_path),
-            "--out", str(case_dir / "smoke"), "--steps", "1", "--no-progress",
-        ]
+        case_run["input_fingerprint"] = input_fingerprint(case_manifest, case_run)
+        manifest_path = case_dir / "manifest.json"
+        manifest_path.write_text(json.dumps(case_manifest, indent=2))
+        command = [sys.executable, str(Path(scan.__file__)), "run-one", "--manifest", str(manifest_path),
+                   "--index", "0", "--backend", args.backend]
+        if args.backend == "gpu" and os.environ.get("CUDA_VISIBLE_DEVICES"):
+            command.extend(["--gpu-ids", os.environ["CUDA_VISIBLE_DEVICES"]])
         try:
             process = subprocess.run(
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -163,11 +186,28 @@ def main() -> None:
             (case_dir / "solver.log").write_text(process.stdout)
             result = dict(
                 case=name, returncode=process.returncode, nu=config.species[0].nu,
-                beta=config.physics.beta, startup_checks=True,
+                beta=config.physics.beta, startup_checks=True, provenance=provenance, backend=args.backend,
             )
         except subprocess.TimeoutExpired as error:
             (case_dir / "solver.log").write_bytes(error.stdout or b"")
             result = dict(case=name, timeout=180, startup_checks=True)
+        if result.get("returncode") == 0:
+            require(completion_status(case_manifest, case_run)[0], f"{name} completion certification")
+            collect_args = scan.build_parser().parse_args(["collect", "--manifest", str(manifest_path),
+                "--out", str(case_dir / "flux_summary.h5"), "--neopax-flux-out", str(case_dir / "neopax_fluxes.h5"),
+                "--no-plot", "--no-plot-run-heat-traces"])
+            require(scan.cmd_collect(collect_args) == 0, f"{name} NEOPAX collection")
+            import h5py
+            with h5py.File(case_dir / "neopax_fluxes.h5") as output:
+                require(output["Q"].shape == (len(case_run["runtime_species"]), 1), f"{name} species shape")
+                require(np.all(np.isfinite(output["Q"][...])), f"{name} finite collected heat flux")
+            columns = np.genfromtxt(case_dir / "smoke.diagnostics.csv", delimiter=",", names=True).dtype.names
+            for index in range(len(case_run["runtime_species"])):
+                require(
+                    f"heat_flux_s{index}" in columns and f"particle_flux_s{index}" in columns,
+                    f"{name} species columns",
+                )
+            result["completion_and_collection"] = True
         results.append(result)
         print(json.dumps(result), flush=True)
 
@@ -182,7 +222,7 @@ def main() -> None:
             all(np.isfinite(diagnostics[name]).all() for name in diagnostics.dtype.names),
             f"Non-finite diagnostics for {result['case']}",
         )
-    print("All three bounded CPU cases passed with finite diagnostics.")
+    print(f"All {len(results)} bounded cases passed with finite diagnostics, completion certification and collection.")
 
 
 if __name__ == "__main__":

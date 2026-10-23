@@ -24,7 +24,9 @@ nperiod = 1
 t_max = 1000.0
 dt = 0.1
 method = "rk3"
-use_diffrax = false
+collision_operator = "lenard_bernstein"
+run_to = "t_max"
+damp_ends_rate = 0.1
 sample_stride = 50
 diagnostics_stride = 50
 fixed_dt = false
@@ -64,7 +66,6 @@ p_hyper = 4.0
 hypercollisions_const = 0.0
 hypercollisions_kz = 1.0
 D_hyper = 0.05
-damp_ends_amp = 0.1
 damp_ends_widthfrac = 0.125
 
 [normalization]
@@ -91,5 +92,6 @@ Nl = 4
 Nm = 12
 
 [output]
+plots = false
 # Retains every chunk's full kx/ky/z diagnostic spectra in host RAM until the end-of-run concatenation.
 resolved_diagnostics = true
