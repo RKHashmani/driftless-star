@@ -573,7 +573,7 @@ pixi run driftless-star --config inputs/quick_run/config.yaml --max-iters 2 --co
 The convergence signal can stop the loop before two iterations. The pressure writer also defaults to `power_series`. To export a polynomial profile manually, run the following command. Only polynomial mode accepts `--degree` and `--drop-axis`.
 
 ```bash
-python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py \
+PYTHONPATH=stages python stages/stage5-post-processing/fit_vmec_pressure_from_transport_h5.py \
   write-input transport_solution.h5 input.vmec --output-input input.polynomial \
   --profile-type power_series --degree 8
 ```
@@ -598,6 +598,29 @@ When you inspect equilibrium output, compare WOUT `pres` with the spline at its 
 ### Why per-iteration `input_dir`/`output_dir`
 
 Each iteration writes into its own `outputs/<run>/loop/iter_N/output/` tree. This is load-bearing: Stages 3 and 4 cache their per-radius runs keyed by output directory, so a single shared output dir would reuse the first pass's cache and feed Stage 5 **stale** neoclassical/turbulent fluxes on every subsequent pass. Distinct `iter_N` trees force Stages 3/4 to recompute each iteration by default. Skipping that recomputation stays opt-in and explicit rather than a stale-cache accident, since the only sanctioned way to ask for it is [`loop.rerun`](#per-stage-rerun-flags), which makes the Snakefile omit the frozen stage's rules and point its consumers at the iteration 1 tree by name.
+
+### Optional current density feedback
+
+Set `current_density_feedback.enabled` to `true` to converge the DKX and equilibrium currents before transport in each outer iteration. The block defaults to the following settings.
+
+```yaml
+current_density_feedback:
+  enabled: false
+  max_iters: 10
+  rel_tol: 1.0e-2
+  abs_tol: 1.0       # A/m²
+  relaxation: 0.5
+```
+
+Run one outer pass, including its J subloop, with `pixi run driftless-star --config inputs/quick_run/config.yaml --max-iters 1`. The driver writes each equilibrium pass under `loop/iter_N/output/j_subloop/iter_M/{input,output}`. `current_density_feedback.max_iters` counts equilibrium passes, including the first. The first pass preserves the supplied `NCURR`. Feedback inputs use `NCURR=1` and an enclosed toroidal current spline. Pressure, kinetic profiles, profile source, electric-field settings, and solver settings stay fixed within the subloop. Profile selection changes only at the outer iteration boundary.
+
+The adapter compares both currents on measured DKX surfaces using the same DKX `sqrt(B2)` denominator. It accepts a pass when `max(abs(J_DKX - J_VMEX)) <= abs_tol + rel_tol * max(abs(J_DKX))`. Current convergence depends on the configured electric field. This subloop does not perform an ambipolar solve.
+
+Each adapter writes `current_density_feedback/convergence.json` and `current_density_feedback/input.current` under its pass output directory. The record identifies the applied input separately from the candidate, and stores settings, residual, threshold, and artifact hashes. Restarting the same invocation runs Snakemake dependency checks and validates the resulting evidence. Invalid evidence, a solver failure, an invalid current export, or exhausted passes stops transport.
+
+After convergence, the driver uses `artifact_reuse` to pass the accepted equilibrium, Boozer output, DKX fluxes, applied input, and convergence evidence to Stages 4 and 5. Stages 1 through 3 have no producers in that final DAG. Artifact reuse keeps pressure export active. Pressure post-processing reads the accepted applied input and preserves its current settings for the next outer iteration. The reuse map and `current_density_feedback_pass` are driver-owned configuration. Enabled feedback requires Stage 3 and every enabled stage to rerun, so freezing an enabled stage through `loop.rerun` is unsupported. Skipped stages remain skipped. Direct transport targets require accepted convergence evidence. Inner adapter targets remain runnable before convergence.
+
+The `stage1_current_density_feedback` rule uses the selected Stage 1 image with `JAX_PLATFORMS=cpu`, four threads, and zero requested GPUs. The adapter supports standard `APHI` and `BLOAT=1`, requires measured edge coverage within `1e-12` in `s`, and accepts at most 101 knots including the axis. It does not extrapolate an interior-only scan to the edge. See the [Stage 1 adapter specification](stage1-equilibrium/spec.md#current-density-feedback-adapter) for conversion and normalization details.
 
 ### Per-stage rerun flags
 
