@@ -34,8 +34,8 @@ cfl = 0.8
 
 [geometry]
 model = "vmec"
-vmec_file = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage1_equilibrium/wout_w7x_t3d_reconstruction.nc"
-geometry_file = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage4_turbulence/wout_w7x_t3d_reconstruction.eik.nc"
+vmec_file = "../../outputs/qh/stage1_equilibrium/wout_qh.nc"
+geometry_file = "../../outputs/qh/stage4_turbulence/wout_qh.eik.nc"
 torflux = 0.64
 alpha = 0.0
 npol = 1.0

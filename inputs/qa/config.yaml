@@ -1,9 +1,9 @@
-# Initial settings from the completed run.
-run_name: w7x_t3d_reconstruction
+# QA settings with DKX current density feedback.
+run_name: qa_landreman_paul_2021
 gpu_ids: all
 jobs_per_gpu: 4
-input_dir: inputs/w7-x/mhd_on_neoclassical_on
-output_dir: outputs/w7-x/mhd_on_neoclassical_on
+input_dir: inputs/qa
+output_dir: outputs/qa
 filenames:
   s1_input: vmec_input.{run_name}
   s1_output: wout_{run_name}.nc
@@ -18,6 +18,12 @@ filenames:
 convergence:
   method: pointwise
   pressure_rel_tol: 1.0e-12
+current_density_feedback:
+  enabled: true
+  max_iters: 100
+  rel_tol: 1.0e-7
+  abs_tol: 1.0e-5    # A/m²
+  relaxation: 0.5
 loop:
   pressure_profile_type: akima_spline
   rerun:

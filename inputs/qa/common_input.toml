@@ -2,20 +2,20 @@
 mode = "transport"
 
 [geometry]
-vmec_file = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage1_equilibrium/wout_w7x_t3d_reconstruction.nc"
-boozer_file = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage2_boozer/boozmn_w7x_t3d_reconstruction.nc"
+vmec_file = "../../outputs/qa/stage1_equilibrium/wout_qa_landreman_paul_2021.nc"
+boozer_file = "../../outputs/qa/stage2_boozer/boozmn_qa_landreman_paul_2021.nc"
 n_radial = 8
 rho_edge = 1.0
 
 [neoclassical]
 flux_model = "dkx_fluxes_r_file"
 entropy_model = "none"
-neoclassical_file = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage3_neoclassical/dkx_flux_profiles.h5"
+neoclassical_file = "../../outputs/qa/stage3_neoclassical/dkx_flux_profiles.h5"
 lagged_response_mode = "fd"
 
 [turbulence]
 flux_model = "fluxes_r_file"
-turbulence_file = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage4_turbulence/neopax_fluxes.h5"
+turbulence_file = "../../outputs/qa/stage4_turbulence/neopax_fluxes.h5"
 lagged_response_mode = "fd"
 
 [classical]
@@ -150,7 +150,7 @@ theta_implicit = 1.0
 theta_rhs_mode = "lagged_transport_response"
 theta_predictor_mode = "linearized"
 
-# Exact W7-X T3D iteration controls:
+# T3D iteration controls copied from W7-X.
 # max_newton_iter = 3
 # newton_threshold = 0.01
 # newton_tolerance = 0.02
@@ -194,5 +194,5 @@ transport_write_hdf5 = true
 transport_compare_ambipolarity_residual = false
 transport_scan_ambipolarity_residual = false
 transport_overlay_reference_er = false
-transport_output_dir = "../../../outputs/w7-x/mhd_on_neoclassical_on/stage5_transport/"
+transport_output_dir = "../../outputs/qa/stage5_transport/"
 transport_plot_n_times = 2
