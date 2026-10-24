@@ -23,7 +23,7 @@ current_density_feedback:
   max_iters: 100
   rel_tol: 1.0e-7
   abs_tol: 1.0e-5    # A/m²
-  relaxation: 0.5
+  relaxation: 1.0
 loop:
   pressure_profile_type: akima_spline
   rerun:
