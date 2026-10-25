@@ -29,6 +29,23 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check available disk space
+      id: disk
+      shell: bash
+      run: |
+        df -h /
+        echo "available_kib=$(df -k --output=avail / | awk 'NR == 2 {print $1}')" >> "$GITHUB_OUTPUT"
+
+    # GitHub only guarantees 14 GB of storage on standard runners, which is not enough
+    # to build the CUDA Apptainer images. If space is low, remove large preinstalled
+    # toolchains that this job does not use (Android SDK, .NET, and Haskell).
+    - name: Free disk space
+      if: ${{ fromJSON(steps.disk.outputs.available_kib) < 31457280 }}  # 30 GiB
+      shell: bash
+      run: |
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+        df -h /
+
     - name: Set up Apptainer
       uses: eWaterCycle/setup-apptainer@v2
 
