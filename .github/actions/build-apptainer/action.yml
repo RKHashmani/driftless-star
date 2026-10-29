@@ -29,8 +29,37 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check available disk space
+      id: disk
+      shell: bash
+      run: |
+        df -h /
+        echo "available_kib=$(df -k --output=avail / | awk 'NR == 2 {print $1}')" >> "$GITHUB_OUTPUT"
+
+    # GitHub only guarantees 14 GB of storage on standard runners, which is not enough
+    # to build the CUDA Apptainer images. If space is low, remove large preinstalled
+    # toolchains that this job does not use (Android SDK, .NET, and Haskell).
+    - name: Free disk space
+      if: ${{ fromJSON(steps.disk.outputs.available_kib) < 31457280 }}  # 30 GiB
+      shell: bash
+      run: |
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+        df -h /
+
+    # eWaterCycle/setup-apptainer installs a .deb that depends on libfuse3-3, which
+    # Ubuntu 26.04 does not ship, so install Apptainer from conda-forge instead
     - name: Set up Apptainer
-      uses: eWaterCycle/setup-apptainer@v2
+      uses: prefix-dev/setup-pixi@v0.11.2
+      with:
+        run-install: false
+        global-environments: apptainer
+
+    - name: Allow unprivileged user namespaces
+      # The conda-forge Apptainer is an unprivileged (non-setuid) install, and
+      # Ubuntu 24.04+ restricts unprivileged user namespaces with AppArmor
+      # See https://apptainer.org/docs/admin/main/user_namespace.html
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
     # # can't use '${{ github.repository }}' as is case sensitive
     - name: Lowercase repository name
@@ -41,8 +70,20 @@ runs:
     - name: Build Apptainer container image
       shell: bash
       working-directory: stages
+      env:
+        # /tmp on ubuntu-26.04 runners is a ~8 GB tmpfs, too small for the CUDA
+        # environments, so build on the runner's disk instead
+        APPTAINER_TMPDIR: ${{ runner.temp }}
       run: |
+        # gzip is the most widely supported SIF compression, so keep it for published
+        # images. Images that are not pushed (e.g. on pull requests) use the much faster zstd.
+        # See https://apptainer.org/docs/user/main/build_a_container.html
+        compression_args=()
+        if [[ "${{ inputs.push }}" != "true" ]]; then
+          compression_args=(--mksquashfs-args "-comp zstd -Xcompression-level 3")
+        fi
         apptainer build \
+          "${compression_args[@]}" \
           --build-arg CUDA_VERSION="${{ inputs.cuda-version }}" \
           --build-arg ENVIRONMENT="${{ inputs.environment }}" \
           "${{ inputs.image-tag }}.sif" \
